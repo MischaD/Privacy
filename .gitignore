@@ -1,0 +1,10 @@
+.vscode/launch.json
+*.json
+*.jpg
+*.png
+*.pyc
+*.log
+*.bin
+*.safetensors
+log/
+wandb/

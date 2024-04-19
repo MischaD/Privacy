@@ -13,10 +13,22 @@
                 "src/experiments/base_experiment.py",
                 "dataset_size_debug",
             ],
-            "python": "/vol/ideadata/ed52egek/conda/fairness/bin/python",
+            "python": "/vol/ideadata/ed52egek/conda/latentprivacy/bin/python",
             "env": {
                 "CUDA_VISIBLE_DEVICES": "3",
-                "PYTHONPATH": "/vol/ideadata/ed52egek/pycharm/fairness",
+                "PYTHONPATH": "/vol/ideadata/ed52egek/pycharm/latent-privacy",
+            },
+            "console": "integratedTerminal"
+        }, 
+        {
+            "name": "Debug Pipeline",
+            "type": "python",
+            "request": "launch",
+            "program": "/vol/ideadata/ed52egek/pycharm/latent-privacy/src/pipeline.py",
+            "python": "/vol/ideadata/ed52egek/conda/latentprivacy/bin/python",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3",
+                "PYTHONPATH": "/vol/ideadata/ed52egek/pycharm/latent-privacy",
             },
             "console": "integratedTerminal"
         }

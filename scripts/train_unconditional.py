@@ -12,8 +12,8 @@ from pathlib import Path
 from utils import main_setup
 from log import logger
 from einops import repeat
-from src.pipeline import check_if_sampled 
-from src.classifier.utils import fairness_classifier
+from utils import VAE, get_model
+from diffusers import AutoencoderKL
 
 import accelerate
 import datasets
@@ -29,10 +29,15 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from torchvision.models import resnet50
 from tqdm.auto import tqdm
-from src.classifier.module import LightningSAFClassifier
-from src.data.dataloader import get_dataset_from_csv, AFFairnessSamplingDataset
+#from src.classifier.module import LightningSAFClassifier
+from einops import rearrange
+from src.pipeline import LDMPipeline
+from src.data.dataloader import get_dataset_from_csv
 from src.data.inpainter import get_inpainter
-from src.pipeline import DDPMPrivacyPipeline
+from torchvision.transforms import ToPILImage
+
+#from src.data.inpainter import get_inpainter
+#from src.pipeline import DDPMPrivacyPipeline
 
 import diffusers
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
@@ -66,8 +71,6 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
 
 
 def main(config):
-    assert config.fairness_classifier_path is not None, "You need to speficy a classifier path to train a fair model"
-    fairness_forward = fairness_classifier(config)
     tb_logging_dir = os.path.join(config.log_dir, "logs")
     config.output_dir = os.path.dirname(config.log_dir)
     accelerator_project_config = ProjectConfiguration(project_dir=config.output_dir, logging_dir=tb_logging_dir)
@@ -134,26 +137,7 @@ def main(config):
     block_out_channels = list((128, 128, 256, 256, 512, 512))
     block_out_channels = tuple(block_out_channels[:config.dm_training.num_down_blocks])
 
-    down_block_types = tuple(list((
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "DownBlock2D",
-            "AttnDownBlock2D",
-            "DownBlock2D",
-        ))[-config.dm_training.num_down_blocks:])
-
-    up_block_types = tuple([{"DownBlock2D": "UpBlock2D", "AttnDownBlock2D": "AttnUpBlock2D"}[x] for x in reversed(down_block_types)])
-
-    model = UNet2DModel(
-        sample_size=config.dm_training.resolution,
-        in_channels=3,
-        out_channels=3,
-        layers_per_block=config.dm_training.layers_per_block,
-        block_out_channels=block_out_channels,
-        down_block_types=down_block_types,
-        up_block_types=up_block_types,
-    )
+    model = get_model(config)
     num_trainable_params = sum(
         p.numel() for p in model.parameters() if p.requires_grad
     )
@@ -200,25 +184,33 @@ def main(config):
         eps=config.dm_training.adam_epsilon,
     )
 
-    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=True, add_private_imgs=False)
-    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=False, add_private_imgs=True)
+    vae = VAE()
+
+    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae)
+
+    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=config.num_af_images, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None)
+    inpainter = get_inpainter(config)
+    for i in range(len(inputs_train_priv)):
+        # apply SAF and compute latent
+        ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}_raw.png"))
+        inputs_train_priv[i], _  = inpainter(None, inputs_train_priv[i])
+        ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}.png"))
+
+    inputs_train_priv = vae.encode(inputs_train_priv).unsqueeze(dim=0)
+
     inputs_train = torch.cat([inputs_train_pub, inputs_train_priv[:config.num_af_images]])
     labels_train = torch.cat([labels_train_pub, labels_train_priv[:config.num_af_images]])
 
-    # Preprocessing the datasets and DataLoaders creation.
-    pre_inpaint_transform = lambda x: x  
-    inpainter = get_inpainter(config) 
-    post_inpaint_transform = transforms.Normalize([0.5], [0.5])
-    every_epoch_transform = transforms.RandomHorizontalFlip() if config.dm_training.random_flip else transforms.Lambda(lambda x: x)
-
-    dataset = AFFairnessSamplingDataset(config, inputs_train, labels_train, pre_inpaint_transform, inpainter, post_inpaint_transform, every_epoch_transform)
-
-    logger.info(f"Dataset size: {len(dataset)}. Number of private images: {sum(dataset.labels)}")
-
-    # log private images
-    priv_images = dataset.get_private_images()[0]
-    torch.save(priv_images, os.path.join(config.log_dir,"private_image.pt")) 
-    transforms.ToPILImage()(make_grid(torch.stack(priv_images) * 0.5 + 0.5, nrow=min(2, config.num_af_images))).save(os.path.join(config.log_dir, "private_images.png"))
+#    # Preprocessing the datasets and DataLoaders creation.
+#    pre_inpaint_transform = lambda x: x  
+#    inpainter = get_inpainter(config) 
+#    post_inpaint_transform = transforms.Normalize([0.5], [0.5])
+#    every_epoch_transform = transforms.RandomHorizontalFlip() if config.dm_training.random_flip else transforms.Lambda(lambda x: x)
+#
+#    dataset = AFFairnessSamplingDataset(config, inputs_train, labels_train, pre_inpaint_transform, inpainter, post_inpaint_transform, every_epoch_transform)
+#
+    dataset = inputs_train
+    logger.info(f"Dataset size: {len(dataset)}. Number of private images: {len(inputs_train_priv)}")
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=config.dm_training.train_batch_size, shuffle=True, num_workers=0,
@@ -263,32 +255,6 @@ def main(config):
 
     global_step = 0
     first_epoch = 0
-    last_fairness_change_epoch = -1 * config.privacy.start_epoch 
-
-    accelerator.get_tracker("wandb").log({"t_memorized_th":config.privacy.memorized_t_threshold})
-    accelerator.get_tracker("wandb").log({"t_forgot_th":config.privacy.forgotten_t_threshold})
-    accelerator.get_tracker("wandb").log({"dataset":config.EXP_PATH.split("/")[-1]})
-    # Potentially load in the weights and states from a previous save
-    if args.resume_from_checkpoint:
-        if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
-        else:
-            # Get the most recent checkpoint
-            dirs = os.listdir(config.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
-
-        if path is None:
-            exit(1)
-        else:
-            accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(config.output_dir, path))
-            global_step = int(path.split("-")[1])
-
-            resume_global_step = global_step * config.dm_training.gradient_accumulation_steps
-            first_epoch = global_step // num_update_steps_per_epoch
-            resume_step = resume_global_step % (num_update_steps_per_epoch * config.dm_training.gradient_accumulation_steps)
 
     # Train!
     for epoch in range(first_epoch, config.dm_training.num_epochs):
@@ -296,13 +262,7 @@ def main(config):
         progress_bar = tqdm(total=num_update_steps_per_epoch, disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
         for step, batch in enumerate(train_dataloader):
-            # Skip steps until we reach the resumed step
-            if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
-                if step % config.dm_training.gradient_accumulation_steps == 0:
-                    progress_bar.update(1)
-                continue
-
-            clean_images = batch["input"].to(weight_dtype)
+            clean_images = batch.to(weight_dtype)
             # Sample noise that we'll add to the images
             noise = torch.randn(clean_images.shape, dtype=weight_dtype, device=clean_images.device)
             bsz = clean_images.shape[0]
@@ -391,25 +351,20 @@ def main(config):
                     ema_model.store(unet.parameters())
                     ema_model.copy_to(unet.parameters())
 
-                pipeline = DDPMPipeline(
-                    unet=unet,
-                    scheduler=noise_scheduler,
-                )
-
+                pipeline = LDMPipeline(vae=vae, unet=model, scheduler=noise_scheduler)
                 generator = torch.Generator(device=pipeline.device).manual_seed(0)
-                # run pipeline in inference (sample random noise and denoise)
                 images = pipeline(
                     generator=generator,
                     batch_size=config.dm_training.eval_batch_size,
                     num_inference_steps=config.dm_training.ddpm_num_inference_steps,
-                    output_type="numpy",
-                ).images
+                )
 
                 if config.dm_training.use_ema:
                     ema_model.restore(unet.parameters())
 
                 # denormalize the images and save to tensorboard
-                images_processed = (images * 255).round().astype("uint8") # B H W C - np array 
+                images_processed = (images * 255).round().cpu().numpy().astype("uint8") # B H W C - np array 
+                images_processed = rearrange(images_processed, "b c h w -> b h w c")
 
                 accelerator.get_tracker("wandb").log(
                     {"test_samples": [wandb.Image(img) for img in images_processed], "epoch": epoch},
@@ -438,99 +393,6 @@ def main(config):
 
                 if config.dm_training.use_ema:
                     ema_model.restore(unet.parameters())
-
-
-            # debug
-            #config.dm_training.ddpm_num_inference_steps = 10
-            #config.dm_training.eval_batch_size  = 8
-
-
-            # TODO after debugging deactivate in 0th epoch
-            if epoch % config.dm_training.eval_fairness_epochs == 0 and config.dm_training.eval_fairness and epoch >= config.privacy.start_epoch:
-                # update active learning policy 
-                logger.info(f"Checking fairness")
-                if epoch - last_fairness_change_epoch < config.privacy.cooldown_epochs: 
-                    logger.info(f"Cooldown")
-                else: 
-                    private_images, private_img_nums = dataset.get_private_images()
-                    unet = accelerator.unwrap_model(model)
-                    ddpm = DDPMPrivacyPipeline(unet=unet, scheduler=noise_scheduler).to("cuda")
-
-                    memorized = check_if_sampled(config.privacy.memorized_t_threshold, 
-                                                ddpm,
-                                                fairness_forward,
-                                                private_images,
-                                                private_img_nums,
-                                                batch_size=config.dm_training.eval_batch_size,
-                                                M=config.privacy.online_M, 
-                                                ddpm_num_inference_steps=config.dm_training.ddpm_num_inference_steps, 
-                                                accelerator=accelerator, 
-                                                global_step=global_step)
-
-                    is_memorized = torch.zeros(len(private_img_nums), dtype=torch.bool)
-                    is_forgotten = torch.zeros(len(private_img_nums), dtype=torch.bool)
-
-                    for i, img_num in enumerate(private_img_nums): 
-                        if memorized[img_num] >= 1: 
-                            dataset.decrease_image_importance(img_num)
-                            is_memorized[i] = True
-                            last_fairness_change_epoch = epoch
-
-                    for k, v in memorized.items():
-                        accelerator.get_tracker("wandb").log({f"Memorized imgs for imgnum={k}":v}, step=global_step)
-
-                    # memorized images are obvisouly not forgotten so we can skip them 
-                    new_private_images = []
-                    new_private_img_nums = []
-                    if not config.privacy.always_compute_forgotten:
-                        new_private_images = []
-                        new_private_img_nums = []
-                        for i in range(len(is_memorized)):
-                            if not is_memorized[i]: 
-                                new_private_images.append(private_images[i])
-                                new_private_img_nums.append(private_img_nums[i])
-                    else: 
-                        new_private_images = private_images
-                        new_private_img_nums = private_img_nums
-
-                    if new_private_images != []:
-                        new_private_images = private_images
-                        new_private_img_nums = private_img_nums
-                        memorized = check_if_sampled(
-                                        config.privacy.forgotten_t_threshold, 
-                                        ddpm,
-                                        fairness_forward,
-                                        new_private_images,
-                                        new_private_img_nums,
-                                        batch_size=config.dm_training.eval_batch_size,
-                                        M=config.privacy.online_M, 
-                                        ddpm_num_inference_steps=config.dm_training.ddpm_num_inference_steps, 
-                                        accelerator=accelerator, 
-                                        global_step=global_step,
-                                        logtype="forgotten"
-                                    )
-                    else: 
-                        # all images are memorized. Clearly they are not forgotten. Overwrite and skip computation 
-                        # (actual number for q could be lower so use with caution)
-
-                        memorized = {v: torch.tensor(config.privacy.online_M) for v in private_img_nums}
-
-                    for i, img_num in enumerate(new_private_img_nums): 
-                        if memorized[img_num] == 0: 
-                            # forgotten
-                            dataset.increase_image_importance(img_num)
-                            is_forgotten[i] = True
-                            last_fairness_change_epoch = epoch
-
-                    for k, v in memorized.items():
-                        accelerator.get_tracker("wandb").log({f"Forgotten imgs for imgnum={k}": config.privacy.online_M - v, }, step=global_step)
-
-                    img_importances = dataset.get_current_importances()
-                    for private_img_num in private_img_nums: 
-                        accelerator.get_tracker("wandb").log({f"Img Importance imgnum={private_img_num}": 
-                                                            img_importances[private_img_num]})
-
-                num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config.dm_training.gradient_accumulation_steps)
 
     accelerator.end_training()
 

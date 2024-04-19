@@ -6,12 +6,17 @@ import math
 
 config = ml_collections.ConfigDict()
 config.seed = 42
-config.base_dir = "/vol/ideadata/ed52egek/data/" if os.path.abspath(".").startswith("/vol") else "/home/atuin/b180dc/b180dc10/data/"
+config.base_dir = "/vol/ideadata/ed52egek/data/chestxray14/" if os.path.abspath(".").startswith("/vol") else "/home/atuin/b180dc/b180dc10/data/chestxray14/"
+config.data_csv = "cxr14privacy.csv" 
+
+config.af_inpainter_name = "circle"
+config.num_af_images = 1
 
 # data
 config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
+config.data.limit_dataset_size = 99
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -35,7 +40,6 @@ af_classifier.num_workers = 15
 af_classifier.check_val_every_n_epoch = 5 # also used for learning rate annealing
 af_classifier.learning_rate_annealing = True 
 af_classifier.learning_rate_annealing_patience = 3 # only checked every af_classifier.check_val_every_n_epoch 
-af_classifier.best_path = f"af_{config.af_inpainter_name}_classifier_last.ckpt" # in EXPERIMENT_NAME
 af_classifier.mask_only = False # ignored if pii 
 
 ## DM training -- more documentation at https://github.com/huggingface/diffusers/blob/main/examples/unconditional_image_generation/train_unconditional.py
@@ -43,8 +47,8 @@ config.dm_training = dm_training = ml_collections.ConfigDict()
 dm_training.resolution = 64  
 dm_training.center_crop = True
 dm_training.random_flip = False # horizontally
-dm_training.train_batch_size = 16
-dm_training.eval_batch_size = 16
+dm_training.train_batch_size = 64
+dm_training.eval_batch_size = 8
 dm_training.num_epochs = 1000
 dm_training.save_images_epochs = 100
 dm_training.save_model_epochs = 100

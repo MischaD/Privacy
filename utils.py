@@ -452,3 +452,29 @@ class VAE:
 
         x = ((1 + x) * 0.5).clip(0, 1)
         return x
+
+
+def get_model(config): 
+    # Initialize the model
+    block_out_channels = list((128, 128, 256, 256, 512, 512))
+    block_out_channels = tuple(block_out_channels[:config.dm_training.num_down_blocks])
+    down_block_types = tuple(list((
+            "DownBlock2D",
+            "DownBlock2D",
+            "DownBlock2D",
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "DownBlock2D",
+        ))[-config.dm_training.num_down_blocks:])
+    up_block_types = tuple([{"DownBlock2D": "UpBlock2D", "AttnDownBlock2D": "AttnUpBlock2D"}[x] for x in reversed(down_block_types)])
+
+    model = UNet2DModel(
+        sample_size=config.dm_training.resolution,
+        in_channels=4,
+        out_channels=4,
+        layers_per_block=config.dm_training.layers_per_block,
+        block_out_channels=block_out_channels,
+        down_block_types=down_block_types,
+        up_block_types=up_block_types,
+    )
+    return model
