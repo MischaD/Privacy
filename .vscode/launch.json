@@ -1,0 +1,24 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train Generative Model",
+            "type": "python",
+            "request": "launch",
+            "program": "/vol/ideadata/ed52egek/pycharm/latent-privacy/scripts/train_unconditional.py",
+            "args": [
+                "src/experiments/base_experiment.py",
+                "dataset_size_debug",
+            ],
+            "python": "/vol/ideadata/ed52egek/conda/fairness/bin/python",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "3",
+                "PYTHONPATH": "/vol/ideadata/ed52egek/pycharm/fairness",
+            },
+            "console": "integratedTerminal"
+        }
+    ]
+}

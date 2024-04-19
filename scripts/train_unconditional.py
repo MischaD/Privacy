@@ -1,0 +1,552 @@
+"""Based on train_unconditional script in the original diffusers repo: https://github.com/huggingface/diffusers/blob/main/examples/unconditional_image_generation/train_unconditional.py"""
+import argparse
+import inspect
+import logging
+import math
+import wandb
+import os
+import shutil
+import numpy as np
+from datetime import timedelta
+from pathlib import Path
+from utils import main_setup
+from log import logger
+from einops import repeat
+from src.pipeline import check_if_sampled 
+from src.classifier.utils import fairness_classifier
+
+import accelerate
+import datasets
+import torch
+import torch.nn.functional as F
+from accelerate import Accelerator, InitProcessGroupKwargs
+from accelerate.logging import get_logger
+from accelerate.utils import ProjectConfiguration
+from datasets import load_dataset, Dataset
+from huggingface_hub import create_repo, upload_folder
+from packaging import version
+from torchvision import transforms
+from torchvision.utils import make_grid
+from torchvision.models import resnet50
+from tqdm.auto import tqdm
+from src.classifier.module import LightningSAFClassifier
+from src.data.dataloader import get_dataset_from_csv, AFFairnessSamplingDataset
+from src.data.inpainter import get_inpainter
+from src.pipeline import DDPMPrivacyPipeline
+
+import diffusers
+from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
+from diffusers.optimization import get_scheduler
+from diffusers.training_utils import EMAModel
+from diffusers.utils import check_min_version, is_accelerate_version, is_tensorboard_available, is_wandb_available
+from diffusers.utils.import_utils import is_xformers_available
+from utils import prepare_tdash_dataset
+
+
+# Will error if the minimal version of diffusers is not installed. Remove at your own risks.
+check_min_version("0.22.0.dev0")
+
+
+def _extract_into_tensor(arr, timesteps, broadcast_shape):
+    """
+    Extract values from a 1-D numpy array for a batch of indices.
+
+    :param arr: the 1-D numpy array.
+    :param timesteps: a tensor of indices into the array to extract.
+    :param broadcast_shape: a larger shape of K dimensions with the batch
+                            dimension equal to the length of timesteps.
+    :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
+    """
+    if not isinstance(arr, torch.Tensor):
+        arr = torch.from_numpy(arr)
+    res = arr[timesteps].float().to(timesteps.device)
+    while len(res.shape) < len(broadcast_shape):
+        res = res[..., None]
+    return res.expand(broadcast_shape)
+
+
+def main(config):
+    assert config.fairness_classifier_path is not None, "You need to speficy a classifier path to train a fair model"
+    fairness_forward = fairness_classifier(config)
+    tb_logging_dir = os.path.join(config.log_dir, "logs")
+    config.output_dir = os.path.dirname(config.log_dir)
+    accelerator_project_config = ProjectConfiguration(project_dir=config.output_dir, logging_dir=tb_logging_dir)
+
+    kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=7200))  # a big number for high resolution or big dataset
+    accelerator = Accelerator(
+        gradient_accumulation_steps=config.dm_training.gradient_accumulation_steps,
+        mixed_precision=config.dm_training.mixed_precision,
+        log_with="wandb",
+        project_config=accelerator_project_config,
+        kwargs_handlers=[kwargs],
+    )
+
+    # `accelerate` 0.16.0 will have better support for customized saving
+    if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
+        # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+        def save_model_hook(models, weights, output_dir):
+            if accelerator.is_main_process:
+                if config.dm_training.use_ema:
+                    ema_model.save_pretrained(os.path.join(output_dir, "unet_ema"))
+
+                for i, model in enumerate(models):
+                    model.save_pretrained(os.path.join(output_dir, "unet"))
+
+                    # make sure to pop weight so that corresponding model is not saved again
+                    weights.pop()
+
+        def load_model_hook(models, input_dir):
+            if config.dm_training.use_ema:
+                load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), UNet2DModel)
+                ema_model.load_state_dict(load_model.state_dict())
+                ema_model.to(accelerator.device)
+                del load_model
+
+            for i in range(len(models)):
+                # pop models so that they are not loaded again
+                model = models.pop()
+
+                # load diffusers style into model
+                load_model = UNet2DModel.from_pretrained(input_dir, subfolder="unet")
+                model.register_to_config(**load_model.config)
+
+                model.load_state_dict(load_model.state_dict())
+                del load_model
+
+        accelerator.register_save_state_pre_hook(save_model_hook)
+        accelerator.register_load_state_pre_hook(load_model_hook)
+
+    # Make one log on every process with the configuration for debugging.
+    logger.info(accelerator.state)
+    if accelerator.is_local_main_process:
+        datasets.utils.logging.set_verbosity_warning()
+        diffusers.utils.logging.set_verbosity_info()
+    else:
+        datasets.utils.logging.set_verbosity_error()
+        diffusers.utils.logging.set_verbosity_error()
+
+    # Handle the repository creation
+    if accelerator.is_main_process:
+        if config.output_dir is not None:
+            os.makedirs(config.output_dir, exist_ok=True)
+
+    # Initialize the model
+    block_out_channels = list((128, 128, 256, 256, 512, 512))
+    block_out_channels = tuple(block_out_channels[:config.dm_training.num_down_blocks])
+
+    down_block_types = tuple(list((
+            "DownBlock2D",
+            "DownBlock2D",
+            "DownBlock2D",
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "DownBlock2D",
+        ))[-config.dm_training.num_down_blocks:])
+
+    up_block_types = tuple([{"DownBlock2D": "UpBlock2D", "AttnDownBlock2D": "AttnUpBlock2D"}[x] for x in reversed(down_block_types)])
+
+    model = UNet2DModel(
+        sample_size=config.dm_training.resolution,
+        in_channels=3,
+        out_channels=3,
+        layers_per_block=config.dm_training.layers_per_block,
+        block_out_channels=block_out_channels,
+        down_block_types=down_block_types,
+        up_block_types=up_block_types,
+    )
+    num_trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+    logger.info(f"Num trainable params: {num_trainable_params}")
+
+    # Create EMA for the model.
+    if config.dm_training.use_ema:
+        ema_model = EMAModel(
+            model.parameters(),
+            decay=config.dm_training.ema_max_decay,
+            use_ema_warmup=True,
+            inv_gamma=config.dm_training.ema_inv_gamma,
+            power=config.dm_training.ema_power,
+            model_cls=UNet2DModel,
+            model_config=model.config,
+        )
+
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+        config.dm_training.mixed_precision = accelerator.mixed_precision
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+        config.dm_training.mixed_precision = accelerator.mixed_precision
+
+    # Initialize the scheduler
+    accepts_prediction_type = "prediction_type" in set(inspect.signature(DDPMScheduler.__init__).parameters.keys())
+    if accepts_prediction_type:
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=config.dm_training.ddpm_num_steps,
+            beta_schedule=config.dm_training.ddpm_beta_schedule,
+            prediction_type=config.dm_training.prediction_type,
+            beta_end=config.dm_training.ddpm_beta_end,
+        )
+    else:
+        noise_scheduler = DDPMScheduler(num_train_timesteps=config.dm_training.ddpm_num_steps, beta_schedule=config.dm_training.ddpm_beta_schedule, beta_end=config.dm_training.ddpm_beta_end)
+
+    # Initialize the optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.dm_training.learning_rate,
+        betas=(config.dm_training.adam_beta1, config.dm_training.adam_beta2),
+        weight_decay=config.dm_training.adam_weight_decay,
+        eps=config.dm_training.adam_epsilon,
+    )
+
+    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=True, add_private_imgs=False)
+    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=False, add_private_imgs=True)
+    inputs_train = torch.cat([inputs_train_pub, inputs_train_priv[:config.num_af_images]])
+    labels_train = torch.cat([labels_train_pub, labels_train_priv[:config.num_af_images]])
+
+    # Preprocessing the datasets and DataLoaders creation.
+    pre_inpaint_transform = lambda x: x  
+    inpainter = get_inpainter(config) 
+    post_inpaint_transform = transforms.Normalize([0.5], [0.5])
+    every_epoch_transform = transforms.RandomHorizontalFlip() if config.dm_training.random_flip else transforms.Lambda(lambda x: x)
+
+    dataset = AFFairnessSamplingDataset(config, inputs_train, labels_train, pre_inpaint_transform, inpainter, post_inpaint_transform, every_epoch_transform)
+
+    logger.info(f"Dataset size: {len(dataset)}. Number of private images: {sum(dataset.labels)}")
+
+    # log private images
+    priv_images = dataset.get_private_images()[0]
+    torch.save(priv_images, os.path.join(config.log_dir,"private_image.pt")) 
+    transforms.ToPILImage()(make_grid(torch.stack(priv_images) * 0.5 + 0.5, nrow=min(2, config.num_af_images))).save(os.path.join(config.log_dir, "private_images.png"))
+
+    train_dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=config.dm_training.train_batch_size, shuffle=True, num_workers=0,
+    )
+
+    # Initialize the learning rate scheduler
+    lr_scheduler = get_scheduler(
+        config.dm_training.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=config.dm_training.lr_warmup_steps * config.dm_training.gradient_accumulation_steps,
+        num_training_steps=(len(train_dataloader) * config.dm_training.num_epochs),
+    )
+
+    # Prepare everything with our `accelerator`.
+    model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, lr_scheduler
+    )
+
+    if config.dm_training.use_ema:
+        ema_model.to(accelerator.device)
+
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if accelerator.is_main_process:
+        run = os.path.split(__file__)[-1].split(".")[0]
+        accelerator.init_trackers(run)
+
+    total_batch_size = config.dm_training.train_batch_size * accelerator.num_processes * config.dm_training.gradient_accumulation_steps
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config.dm_training.gradient_accumulation_steps)
+    max_train_steps = config.dm_training.num_epochs * num_update_steps_per_epoch
+
+    logger.info("***** Running training *****")
+    logger.info(f"  Num down blocks = {config.dm_training.num_down_blocks}")
+    logger.info(f"  Num examples = {len(dataset)}")
+    logger.info(f"  Num Epochs = {config.dm_training.num_epochs}")
+    logger.info(f"  Instantaneous batch size per device = {config.dm_training.train_batch_size}")
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    logger.info(f"  Gradient Accumulation steps = {config.dm_training.gradient_accumulation_steps}")
+    logger.info(f"  Total optimization steps = {max_train_steps}")
+    logger.info(f"  Beta end value = {config.dm_training.ddpm_beta_end}")
+    logger.info(f"Logging to: {config.output_dir}")
+
+    global_step = 0
+    first_epoch = 0
+    last_fairness_change_epoch = -1 * config.privacy.start_epoch 
+
+    accelerator.get_tracker("wandb").log({"t_memorized_th":config.privacy.memorized_t_threshold})
+    accelerator.get_tracker("wandb").log({"t_forgot_th":config.privacy.forgotten_t_threshold})
+    accelerator.get_tracker("wandb").log({"dataset":config.EXP_PATH.split("/")[-1]})
+    # Potentially load in the weights and states from a previous save
+    if args.resume_from_checkpoint:
+        if args.resume_from_checkpoint != "latest":
+            path = os.path.basename(args.resume_from_checkpoint)
+        else:
+            # Get the most recent checkpoint
+            dirs = os.listdir(config.output_dir)
+            dirs = [d for d in dirs if d.startswith("checkpoint")]
+            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+            path = dirs[-1] if len(dirs) > 0 else None
+
+        if path is None:
+            exit(1)
+        else:
+            accelerator.print(f"Resuming from checkpoint {path}")
+            accelerator.load_state(os.path.join(config.output_dir, path))
+            global_step = int(path.split("-")[1])
+
+            resume_global_step = global_step * config.dm_training.gradient_accumulation_steps
+            first_epoch = global_step // num_update_steps_per_epoch
+            resume_step = resume_global_step % (num_update_steps_per_epoch * config.dm_training.gradient_accumulation_steps)
+
+    # Train!
+    for epoch in range(first_epoch, config.dm_training.num_epochs):
+        model.train()
+        progress_bar = tqdm(total=num_update_steps_per_epoch, disable=not accelerator.is_local_main_process)
+        progress_bar.set_description(f"Epoch {epoch}")
+        for step, batch in enumerate(train_dataloader):
+            # Skip steps until we reach the resumed step
+            if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
+                if step % config.dm_training.gradient_accumulation_steps == 0:
+                    progress_bar.update(1)
+                continue
+
+            clean_images = batch["input"].to(weight_dtype)
+            # Sample noise that we'll add to the images
+            noise = torch.randn(clean_images.shape, dtype=weight_dtype, device=clean_images.device)
+            bsz = clean_images.shape[0]
+            # Sample a random timestep for each image
+            timesteps = torch.randint(
+                0, noise_scheduler.config.num_train_timesteps, (bsz,), device=clean_images.device
+            ).long()
+
+            # Add noise to the clean images according to the noise magnitude at each timestep
+            # (this is the forward diffusion process)
+            noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
+
+            with accelerator.accumulate(model):
+                # Predict the noise residual
+                model_output = model(noisy_images, timesteps).sample
+
+                if config.dm_training.prediction_type == "epsilon":
+                    loss = F.mse_loss(model_output.float(), noise.float())  # this could have different weights!
+                elif config.dm_training.prediction_type == "sample":
+                    alpha_t = _extract_into_tensor(
+                        noise_scheduler.alphas_cumprod, timesteps, (clean_images.shape[0], 1, 1, 1)
+                    )
+                    snr_weights = alpha_t / (1 - alpha_t)
+                    # use SNR weighting from distillation paper
+                    loss = snr_weights * F.mse_loss(model_output.float(), clean_images.float(), reduction="none")
+                    loss = loss.mean()
+                else:
+                    raise ValueError(f"Unsupported prediction type: {config.dm_training.prediction_type}")
+
+                accelerator.backward(loss)
+
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
+                if config.dm_training.use_ema:
+                    ema_model.step(model.parameters())
+                progress_bar.update(1)
+                global_step += 1
+
+                if accelerator.is_main_process:
+                    if global_step % config.dm_training.checkpointing_steps == 0:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if config.dm_training.checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(config.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= config.dm_training.checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - config.dm_training.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoints[0:num_to_remove]
+
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(config.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
+
+                        save_path = os.path.join(config.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path)
+                        logger.info(f"Saved state to {save_path}")
+
+            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
+            if config.dm_training.use_ema:
+                logs["ema_decay"] = ema_model.cur_decay_value
+            progress_bar.set_postfix(**logs)
+            accelerator.log(logs, step=global_step)
+        progress_bar.close()
+
+        accelerator.wait_for_everyone()
+
+        # Generate sample images for visual inspection
+        if accelerator.is_main_process:
+            if epoch % config.dm_training.save_images_epochs == 0 or epoch == config.dm_training.num_epochs - 1:
+                unet = accelerator.unwrap_model(model)
+
+                if config.dm_training.use_ema:
+                    ema_model.store(unet.parameters())
+                    ema_model.copy_to(unet.parameters())
+
+                pipeline = DDPMPipeline(
+                    unet=unet,
+                    scheduler=noise_scheduler,
+                )
+
+                generator = torch.Generator(device=pipeline.device).manual_seed(0)
+                # run pipeline in inference (sample random noise and denoise)
+                images = pipeline(
+                    generator=generator,
+                    batch_size=config.dm_training.eval_batch_size,
+                    num_inference_steps=config.dm_training.ddpm_num_inference_steps,
+                    output_type="numpy",
+                ).images
+
+                if config.dm_training.use_ema:
+                    ema_model.restore(unet.parameters())
+
+                # denormalize the images and save to tensorboard
+                images_processed = (images * 255).round().astype("uint8") # B H W C - np array 
+
+                accelerator.get_tracker("wandb").log(
+                    {"test_samples": [wandb.Image(img) for img in images_processed], "epoch": epoch},
+                    step=global_step,
+                )
+
+            if epoch % config.dm_training.save_model_epochs == 0 or epoch == config.dm_training.num_epochs - 1:
+                # save the model
+                unet = accelerator.unwrap_model(model)
+
+                if config.dm_training.use_ema:
+                    ema_model.store(unet.parameters())
+                    ema_model.copy_to(unet.parameters())
+
+                pipeline = DDPMPipeline(
+                    unet=unet,
+                    scheduler=noise_scheduler,
+                )
+
+                if epoch != config.dm_training.num_epochs - 1:
+                    pipeline.save_pretrained(os.path.join(config.output_dir, f"epoch-{epoch:05}"))
+                else: 
+                    logger.info(f"Saving final model to: {config.output_dir} and {config.log_dir}")
+                    pipeline.save_pretrained(os.path.join(config.output_dir, f"final"))
+                    pipeline.save_pretrained(os.path.join(config.log_dir, f"final"))
+
+                if config.dm_training.use_ema:
+                    ema_model.restore(unet.parameters())
+
+
+            # debug
+            #config.dm_training.ddpm_num_inference_steps = 10
+            #config.dm_training.eval_batch_size  = 8
+
+
+            # TODO after debugging deactivate in 0th epoch
+            if epoch % config.dm_training.eval_fairness_epochs == 0 and config.dm_training.eval_fairness and epoch >= config.privacy.start_epoch:
+                # update active learning policy 
+                logger.info(f"Checking fairness")
+                if epoch - last_fairness_change_epoch < config.privacy.cooldown_epochs: 
+                    logger.info(f"Cooldown")
+                else: 
+                    private_images, private_img_nums = dataset.get_private_images()
+                    unet = accelerator.unwrap_model(model)
+                    ddpm = DDPMPrivacyPipeline(unet=unet, scheduler=noise_scheduler).to("cuda")
+
+                    memorized = check_if_sampled(config.privacy.memorized_t_threshold, 
+                                                ddpm,
+                                                fairness_forward,
+                                                private_images,
+                                                private_img_nums,
+                                                batch_size=config.dm_training.eval_batch_size,
+                                                M=config.privacy.online_M, 
+                                                ddpm_num_inference_steps=config.dm_training.ddpm_num_inference_steps, 
+                                                accelerator=accelerator, 
+                                                global_step=global_step)
+
+                    is_memorized = torch.zeros(len(private_img_nums), dtype=torch.bool)
+                    is_forgotten = torch.zeros(len(private_img_nums), dtype=torch.bool)
+
+                    for i, img_num in enumerate(private_img_nums): 
+                        if memorized[img_num] >= 1: 
+                            dataset.decrease_image_importance(img_num)
+                            is_memorized[i] = True
+                            last_fairness_change_epoch = epoch
+
+                    for k, v in memorized.items():
+                        accelerator.get_tracker("wandb").log({f"Memorized imgs for imgnum={k}":v}, step=global_step)
+
+                    # memorized images are obvisouly not forgotten so we can skip them 
+                    new_private_images = []
+                    new_private_img_nums = []
+                    if not config.privacy.always_compute_forgotten:
+                        new_private_images = []
+                        new_private_img_nums = []
+                        for i in range(len(is_memorized)):
+                            if not is_memorized[i]: 
+                                new_private_images.append(private_images[i])
+                                new_private_img_nums.append(private_img_nums[i])
+                    else: 
+                        new_private_images = private_images
+                        new_private_img_nums = private_img_nums
+
+                    if new_private_images != []:
+                        new_private_images = private_images
+                        new_private_img_nums = private_img_nums
+                        memorized = check_if_sampled(
+                                        config.privacy.forgotten_t_threshold, 
+                                        ddpm,
+                                        fairness_forward,
+                                        new_private_images,
+                                        new_private_img_nums,
+                                        batch_size=config.dm_training.eval_batch_size,
+                                        M=config.privacy.online_M, 
+                                        ddpm_num_inference_steps=config.dm_training.ddpm_num_inference_steps, 
+                                        accelerator=accelerator, 
+                                        global_step=global_step,
+                                        logtype="forgotten"
+                                    )
+                    else: 
+                        # all images are memorized. Clearly they are not forgotten. Overwrite and skip computation 
+                        # (actual number for q could be lower so use with caution)
+
+                        memorized = {v: torch.tensor(config.privacy.online_M) for v in private_img_nums}
+
+                    for i, img_num in enumerate(new_private_img_nums): 
+                        if memorized[img_num] == 0: 
+                            # forgotten
+                            dataset.increase_image_importance(img_num)
+                            is_forgotten[i] = True
+                            last_fairness_change_epoch = epoch
+
+                    for k, v in memorized.items():
+                        accelerator.get_tracker("wandb").log({f"Forgotten imgs for imgnum={k}": config.privacy.online_M - v, }, step=global_step)
+
+                    img_importances = dataset.get_current_importances()
+                    for private_img_num in private_img_nums: 
+                        accelerator.get_tracker("wandb").log({f"Img Importance imgnum={private_img_num}": 
+                                                            img_importances[private_img_num]})
+
+                num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config.dm_training.gradient_accumulation_steps)
+
+    accelerator.end_training()
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
+    parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
+    parser.add_argument("--data_dir", type=str, help="data dir or csv with paths to data")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = get_args()
+    config = main_setup(args, name=os.path.basename(__file__).rstrip('.py'))
+    env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    if env_local_rank != -1 and env_local_rank != config.dm_training.local_rank:
+        config.dm_training.local_rank = env_local_rank
+    main(config)
