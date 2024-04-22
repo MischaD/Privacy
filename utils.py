@@ -21,6 +21,7 @@ import shutil
 import datetime
 import logging
 from log import logger
+from diffusers import UNet2DModel
 
 
 def data_loader(fn):
@@ -413,12 +414,12 @@ def prepare_tdash_dataset(inputs, img_nums, M):
 import torch 
 from diffusers import AutoencoderKL
 class VAE: 
-    def __init__(self) -> None:
+    def __init__(self, device="cuda") -> None:
         vae = AutoencoderKL.from_pretrained(
             "stabilityai/stable-diffusion-2-base", subfolder="vae",
         )
 
-        vae = vae.to("cuda")
+        vae = vae.to(device)
         self.vae = vae
 
     def __call__(self, x):

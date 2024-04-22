@@ -401,7 +401,6 @@ def get_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
-    parser.add_argument("--data_dir", type=str, help="data dir or csv with paths to data")
     return parser.parse_args()
 
 

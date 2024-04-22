@@ -24,7 +24,7 @@ saf.training_data_probability = 0.5
 saf.radius = int(9 * 2 ** (math.log2(config.data.image_size) - 6))# 72 for 512 images
 saf.seed = 30
 
-# af classifer
+# af classiferdd
 config.af_classifier = af_classifier = ml_collections.ConfigDict()
 af_classifier.early_stopping = "val_loss"
 af_classifier.lr = 1e-3
@@ -90,7 +90,8 @@ privacy.cooldown_epochs = 0 # after a change - how long do you want to wait
 #
 ## sampling
 config.sampling = sampling = ml_collections.ConfigDict()
-sampling.N = 50000
+sampling.batch_size = 64
+sampling.N = 50 
 sampling.ddpm_inference_steps = 100 
 
 config.evaluate = evaluate = ml_collections.ConfigDict()

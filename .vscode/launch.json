@@ -21,16 +21,20 @@
             "console": "integratedTerminal"
         }, 
         {
-            "name": "Debug Pipeline",
+            "name": "Sample Generative Model",
             "type": "python",
             "request": "launch",
-            "program": "/vol/ideadata/ed52egek/pycharm/latent-privacy/src/pipeline.py",
+            "program": "/vol/ideadata/ed52egek/pycharm/latent-privacy/scripts/sample.py",
+            "args": [
+                "src/experiments/base_experiment.py",
+                "dataset_size_debug",
+            ],
             "python": "/vol/ideadata/ed52egek/conda/latentprivacy/bin/python",
             "env": {
-                "CUDA_VISIBLE_DEVICES": "3",
+                "CUDA_VISIBLE_DEVICES": "2,3",
                 "PYTHONPATH": "/vol/ideadata/ed52egek/pycharm/latent-privacy",
             },
             "console": "integratedTerminal"
-        }
+        }, 
     ]
 }
