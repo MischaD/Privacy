@@ -187,8 +187,8 @@ def main(config):
     vae = VAE()
 
     inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae)
+    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
 
-    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=config.num_af_images, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None)
     inpainter = get_inpainter(config)
     for i in range(len(inputs_train_priv)):
         # apply SAF and compute latent
@@ -198,8 +198,8 @@ def main(config):
 
     inputs_train_priv = vae.encode(inputs_train_priv).unsqueeze(dim=0)
 
-    inputs_train = torch.cat([inputs_train_pub, inputs_train_priv[:config.num_af_images]])
-    labels_train = torch.cat([labels_train_pub, labels_train_priv[:config.num_af_images]])
+    inputs_train = torch.cat([inputs_train_pub, inputs_train_priv])
+    labels_train = torch.cat([labels_train_pub, labels_train_priv])
 
 #    # Preprocessing the datasets and DataLoaders creation.
 #    pre_inpaint_transform = lambda x: x  
@@ -401,6 +401,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
+    parser.add_argument("--data_csv",  default="cxr14privacy.csv")
     return parser.parse_args()
 
 

@@ -13,10 +13,18 @@
 # limitations under the License.
 
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Union
-
 import torch
+import wandb
+import numpy as np
+from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 from packaging import version
+from diffusers.pipelines import DDPMPipeline 
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.pipelines.pipeline_utils import ImagePipelineOutput
+from log import logger
+from utils import prepare_tdash_dataset
+from einops import repeat
+from torchvision.utils import make_grid
 
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
@@ -641,3 +649,150 @@ class LDMPipeline(
         self.maybe_free_model_hooks()
 
         return image 
+
+
+def check_if_sampled(t_dash, ddpm, fairness_forward, private_images, private_img_nums, batch_size, M, ddpm_num_inference_steps, accelerator, global_step, logtype="memorized"):
+    """ Helper function to compute t_dash values given the diffusion models, the classifier forward function and the data.
+    
+
+    t_dash: t_dash value
+    ddpm: ddpm object to sample from 
+    private_images: Private images to check
+    private_img_nums: Number of the private images in the dataset.
+    batch_size: batch_size of classifier
+    M: M hyperparameter (see paper)
+    ddpm_num_inference_steps: Number of inference steps in computation of tdash
+    accelerator: for logger
+    global_step: for logger
+    """
+    priv_imgs_input, priv_imgs_nums = prepare_tdash_dataset(private_images, private_img_nums, M)
+
+    sample_times = {} 
+    priv_imgs_preds = []
+    for batch_i in np.arange(len(priv_imgs_input), step=batch_size):
+        batch = priv_imgs_input[batch_i:batch_i+batch_size].to("cuda")
+        image_prediction = ddpm(private_image=batch, 
+                                               t_dash=torch.tensor([t_dash]).to("cuda"), 
+                                               num_inference_steps=ddpm_num_inference_steps,
+                                               output_type="numpy")[0]
+        priv_imgs_preds.append(torch.Tensor(image_prediction)) 
+        batch = batch.cpu()
+
+    priv_imgs_preds = torch.cat(priv_imgs_preds).transpose(2, 3).transpose(1, 2)
+    priv_imgs_clfs_preds = []
+    logger.info(f"Checking for memorization with value tdash = {t_dash}")
+    for batch_i in np.arange(len(priv_imgs_preds), step=batch_size):
+        priv_imgs_clfs_preds.append(fairness_forward(priv_imgs_preds[batch_i:batch_i+batch_size].to("cuda")).cpu())
+    priv_imgs_clfs_preds = torch.cat(priv_imgs_clfs_preds)
+
+    # compute for each image 
+    priv_imgs = set(private_img_nums)
+    for priv_img in priv_imgs: 
+        sample_time = priv_imgs_clfs_preds[priv_imgs_nums == priv_img].sum()
+        sample_times[priv_img] = sample_time
+
+    # priv_imgs_preds 16 predicted images
+    # priv_imgs_input 16 input images 
+    # do logging
+    return sample_times
+    #b, c, h, w = priv_imgs_input.size()
+    #label_images = repeat(priv_imgs_clfs_preds.float()*2 - 1, "b -> b c h w", c=c, h=h, w=w)
+    #for i in np.arange(len(priv_imgs_input), step=M):  
+    #    imgs = torch.cat([priv_imgs_input[i:i+M], priv_imgs_preds[i:i+M], label_images[i:i+M]])
+    #    imgs = ((imgs + 1)* 127.5).round().byte()
+    #    imgs = make_grid(imgs, nrow=M)
+
+    #    accelerator.get_tracker("wandb").log(
+    #        {f"Privacy {logtype} {priv_imgs_nums[i]}": [wandb.Image(imgs)]},
+    #        step=global_step,
+    #    )
+
+
+
+class DDPMPrivacyPipeline(DDPMPipeline):
+    model_cpu_offload_seq = "unet"
+
+    def __init__(self, unet, scheduler):
+        super().__init__(unet, scheduler)
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        private_image: torch.Tensor,
+        t_dash: float = 0.1,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        num_inference_steps: int = 1000,
+        output_type: Optional[str] = "pil",
+        return_dict: bool = True,
+    ) -> Union[ImagePipelineOutput, Tuple]:
+        r"""
+        The call function to the pipeline for generation.
+
+        Args:
+            private_image (`torch.Tensor`):
+                The -1 to 1 normalized image to test privacy for 
+            t_dash (`float`, t_dash value to check privacy for. refers to the range of the reverse diffusion process)
+            generator (`torch.Generator`, *optional*):
+                A [`torch.Generator`](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make
+                generation deterministic.
+            num_inference_steps (`int`, *optional*, defaults to 1000):
+                The number of denoising steps. More denoising steps usually lead to a higher quality image at the
+                expense of slower inference.
+            output_type (`str`, *optional*, defaults to `"pil"`):
+                The output format of the generated image. Choose between `PIL.Image` or `np.array`.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~pipelines.ImagePipelineOutput`] instead of a plain tuple.
+
+        Example:
+
+        ```py
+        >>> from diffusers import DDPMPipeline
+
+        >>> # load model and scheduler
+        >>> pipe = DDPMPipeline.from_pretrained("google/ddpm-cat-256")
+
+        >>> # run pipeline in inference (sample random noise and denoise)
+        >>> image = pipe().images[0]
+
+        >>> # save image
+        >>> image.save("ddpm_generated_image.png")
+        ```
+
+        Returns:
+            [`~pipelines.ImagePipelineOutput`] or `tuple`:
+                If `return_dict` is `True`, [`~pipelines.ImagePipelineOutput`] is returned, otherwise a `tuple` is
+                returned where the first element is a list with the generated images
+        """
+        # check that private image is B x C x H x W 
+        assert len(private_image.size()) == 4
+        batch_size, in_channels, sample_size_h, sample_size_w = private_image.size() 
+        assert in_channels == self.unet.config.in_channels and sample_size_h == sample_size_w == self.unet.config.sample_size
+        t_dash = t_dash + 0.0001
+        assert t_dash <= 1 and t_dash >= 0 
+
+        noise = randn_tensor(private_image.size(), generator=generator, device=self.device)
+
+        t_dash = t_dash * self.scheduler.config.num_train_timesteps
+
+        # set step values
+        self.scheduler.set_timesteps(num_inference_steps)
+        timesteps = self.scheduler.timesteps.to("cuda")
+        timesteps = timesteps[timesteps <= t_dash]
+        image = self.scheduler.add_noise(original_samples=private_image, noise=noise, timesteps=torch.tensor([t_dash.to(torch.int),] * batch_size, dtype=torch.long).to(self.device))
+
+        for t in self.progress_bar(timesteps):
+            # 1. predict noise model_output
+            model_output = self.unet(image, t).sample
+
+            # 2. compute previou image: x_t -> x_t-1
+            image = self.scheduler.step(model_output, t, image, generator=generator).prev_sample
+
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).numpy()
+        if output_type == "pil":
+            image = self.numpy_to_pil(image)
+
+        if not return_dict:
+            return (image,)
+
+        return ImagePipelineOutput(images=image)

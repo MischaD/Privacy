@@ -30,62 +30,9 @@ def hash_dataset_path(dataset_root_dir, img_list, is_latent=False):
     return os.path.join(dataset_root_dir, "hashdata_" + name)
 
 
-def get_dataset_from_csv(config, split, limit=-1, vae=None, return_labels=False, add_public_imgs=True, add_private_imgs=True, rel_path_key="path"):
-    """Get dataset according to csv file. """
-    #rng.shuffle(img_list)
-    df = pd.read_csv(os.path.join(config.base_dir, config.data_csv))
-    private_imgs = df.sample(config.num_af_images, random_state=config.data.dataset_shuffle_seed)
-    private_df = df.loc[private_imgs.index]
-    non_private_df = df.drop(private_df.index)
-
-    # sort and determine split of non private images
-    df_non_private_sorted = non_private_df.sort_values(by=rel_path_key)
-    logger.info(f"Dataset shuffle seed: {config.data.dataset_shuffle_seed}")
-    df_shuffled = df_non_private_sorted.sample(frac=1, random_state=config.data.dataset_shuffle_seed).reset_index(drop=True) 
-    if "split" in df_shuffled.columns: 
-        logger.info("Split column found! Using it accordingly")
-        df_shuffled = df_shuffled[df_shuffled.split == split] 
-        img_list = list(df_shuffled[rel_path_key])
-        if limit != -1: 
-            img_list = img_list[:limit]
-    else: 
-        logger.info("No split column found. Using default split 60, 20, 20")
-        img_list = list(df_shuffled[rel_path_key])
-        if limit != -1:
-            img_list = img_list[:limit]
-        if split == "train":
-            start = 0
-            stop = 0.60
-        elif split == "val":
-            start = 0.60
-            stop = 0.80
-        elif split == "test":
-            start = 0.80
-            stop = 1
-        elif split == "all": 
-            start = 0
-            stop = 1
-        else:
-            raise ValueError("One split has to be true")
-
-        img_list = img_list[int(start * len(img_list)):int(stop * len(img_list))]
-
-    df_private_sorted = private_df.sort_values(by=rel_path_key)
-    priv_img_list = list(df_private_sorted[rel_path_key])
-
-
-    full_img_list = []
-    full_label_list = []
-    if add_public_imgs:
-        full_img_list +=  img_list
-        full_label_list += [torch.zeros(len(img_list)),]
-    if add_private_imgs:
-        full_img_list += priv_img_list
-        full_label_list += [torch.ones(len(priv_img_list)),]
-    label_list = torch.cat(full_label_list)
+def load_data(config, full_img_list, vae=None):
     data_path = os.path.dirname(config.base_dir)
     hash_path = hash_dataset_path(dataset_root_dir=data_path, img_list=full_img_list, is_latent=vae is not None)
-
     if os.path.isfile(hash_path):
         logger.info(f"Loading precomputed dataset: {hash_path}")
         inputs = torch.load(hash_path)
@@ -114,10 +61,90 @@ def get_dataset_from_csv(config, split, limit=-1, vae=None, return_labels=False,
         inputs = torch.stack(inputs)
         logger.info(f"Saving precomputed dataset as {hash_path}")
         torch.save(inputs, hash_path)
+
+    return inputs
+
+
+def get_synthetic_dataset_from_csv(config, split, limit=-1, vae=None, return_labels=False, add_public_imgs=True, add_private_imgs=True, rel_path_key="path"):
+    """Get dataset according to csv file. """
+    #rng.shuffle(img_list)
+    assert add_private_imgs, "SAF will only be added in dataloader - add_private_imgs should alwayss be false"
+    assert add_public_imgs, "Function will always return public images"
+
+    df = pd.read_csv(os.path.join(config.base_dir, config.data_csv))
+    df = df[df[config.af_feature] == False]
+    non_private_df = df  
+
+    # sort and determine split of non private images
+    df_non_private_sorted = non_private_df.sort_values(by=rel_path_key)
+    logger.info(f"Dataset shuffle seed: {config.data.dataset_shuffle_seed}")
+    df_shuffled = df_non_private_sorted.sample(frac=1, random_state=config.data.dataset_shuffle_seed).reset_index(drop=True) 
+    df_shuffled = df_shuffled[df_shuffled.split == split] 
+    img_list = list(df_shuffled[rel_path_key])
+    # limit dataset for smaller experiments
+    if limit != -1: 
+        img_list = img_list[:limit]
+
+    full_img_list = []
+    full_label_list = []
+    if add_public_imgs:
+        full_img_list +=  img_list
+        full_label_list += [torch.zeros(len(img_list)),]
+
+    label_list = torch.cat(full_label_list)
+    inputs = load_data(config, full_img_list, vae)
     if return_labels:
         return inputs, torch.tensor(label_list).unsqueeze(dim=1)
     return inputs
 
+
+def get_dataset_from_csv(config, split, limit=-1, vae=None, return_labels=False, add_public_imgs=True, add_private_imgs=True, rel_path_key="path", csv_path=None):
+    """Get dataset according to csv file. """
+    if csv_path: 
+        df = pd.read_csv(os.path.join(config.base_dir, csv_path))
+    else: 
+        df = pd.read_csv(os.path.join(config.base_dir, config.data_csv))
+
+    non_private_df = df[df[config.af_feature] == False]
+    private_df = df[df[config.af_feature] == True]
+
+    # sort and determine split of non private images
+    df_non_private_sorted = non_private_df.sort_values(by=rel_path_key)
+    df_private_sorted = private_df.sort_values(by=rel_path_key)
+
+    logger.info(f"Dataset shuffle seed: {config.data.dataset_shuffle_seed}")
+    df_non_private_shuffled = df_non_private_sorted.sample(frac=1, random_state=config.data.dataset_shuffle_seed).reset_index(drop=True) 
+    df_private_shuffled = df_private_sorted.sample(frac=1, random_state=config.data.dataset_shuffle_seed).reset_index(drop=True) 
+
+    logger.info("Split column found! Using it accordingly")
+    df_non_private_shuffled = df_non_private_shuffled[df_non_private_shuffled.split == split] 
+    df_private_shuffled = df_private_shuffled[df_private_shuffled.split == split] 
+
+    img_list_non_private = list(df_non_private_shuffled[rel_path_key])
+    img_list_private = list(df_private_shuffled[rel_path_key])
+    if limit != -1: 
+        if add_private_imgs and add_public_imgs: 
+            limit = limit // 2
+
+        img_list_private = img_list_private[:limit]
+        img_list_non_private = img_list_non_private[:limit]
+
+    full_img_list = []
+    full_label_list = []
+    if add_public_imgs:
+        full_img_list +=  img_list_non_private
+        full_label_list += [torch.zeros(len(img_list_non_private)),]
+    if add_private_imgs:
+        full_img_list += img_list_private
+        full_label_list += [torch.ones(len(img_list_private)),]
+
+    label_list = torch.cat(full_label_list)
+
+    inputs = load_data(config, full_img_list, vae)
+
+    if return_labels:
+        return inputs, torch.tensor(label_list).unsqueeze(dim=1)
+    return inputs
 
 
 class DataModuleFromConfig(pl.LightningDataModule):
@@ -167,3 +194,98 @@ class TestDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return self._test_dataloader
+
+
+class AFClassificationDataset(Dataset):
+    def __init__(self, config, inputs, labels, pre_inpaint_transform=None, inpainter=None, post_inpaint_transform=None):
+        self.config = config
+        self.saf_config = config.data.saf
+        self.inputs = inputs
+        self.labels = labels
+        self.pre_inpaint_transform = pre_inpaint_transform
+        self.inpainter = inpainter
+        self.post_inpaint_transform = post_inpaint_transform
+        self.n_classes = 1
+        self._test_mode = False
+        self.mask = None
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        input = self.inputs[idx]
+        y = self.labels[idx].to(torch.long)
+        if input.size()[0] != 3:
+            input = repeat(input, "1 h w -> 3 h w")
+
+        if self._test_mode: 
+            return self.get_test_sample(input, y)
+
+        input = self.pre_inpaint_transform(input)
+        if np.random.rand() < self.saf_config.training_data_probability and self.inpainter is not None and self.config.use_synthetic_af: 
+            input, mask = self.inpainter(None, input)
+            self.mask = mask
+            y = torch.tensor([1], dtype=torch.long)
+        input = self.post_inpaint_transform(input)
+
+        sample = {"image": input, "target": y}
+        return sample
+
+    def set_test_mode(self, mode): 
+        """Test mode means for each sample we want the inpainted and the non inpainted version in the batch."""
+        logger.info(f"Setting test mode to {mode}")
+        self._test_mode = mode
+
+
+    def get_test_sample(self, input, y): 
+        """See test mode
+        """
+        input = self.pre_inpaint_transform(input)
+        counter_input = torch.clone(input)
+        if self.config.use_synthetic_af: 
+            counter_input, _ = self.inpainter(None, counter_input)
+            counter_y = torch.tensor([1], dtype=torch.long)
+            input = self.post_inpaint_transform(input)
+            counter_input = self.post_inpaint_transform(counter_input)
+            return {"image": [input, counter_input], "target": [y, counter_y]}
+        else: 
+            # real af cannot be inpainted. 
+            return {"image": [input,], "target": [y,]}
+
+
+class IDClassificationDataset(Dataset):
+    def __init__(self, config, inputs, labels, pre_inpaint_transform=None, inpainter=None, post_inpaint_transform=None):
+        self.config = config
+        self.inputs = inputs
+        self.labels = labels
+        self.pre_inpaint_transform = pre_inpaint_transform
+        self.inpainter = inpainter
+        self.post_inpaint_transform = post_inpaint_transform
+        self.n_classes = 1
+        self._test_mode = False
+        self.mask = None
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        input = self.inputs[idx]
+        y = self.labels[idx].to(torch.long)
+        if input.size()[0] != 3:
+            input = repeat(input, "1 h w -> 3 h w")
+
+        input = self.pre_inpaint_transform(input)
+        mask = torch.zeros_like(input)
+        for i in range(np.random.randint(self.config.id_classifier.max_circles_per_image)):
+            input, new_mask = self.inpainter(None, input)
+            mask = torch.logical_or(mask, new_mask)
+
+        input = self.post_inpaint_transform(input)
+        sample = {"image": input, "target": y}
+        return sample

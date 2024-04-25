@@ -8,15 +8,16 @@ config = ml_collections.ConfigDict()
 config.seed = 42
 config.base_dir = "/vol/ideadata/ed52egek/data/chestxray14/" if os.path.abspath(".").startswith("/vol") else "/home/atuin/b180dc/b180dc10/data/chestxray14/"
 config.data_csv = "cxr14privacy.csv" 
+config.private_data_csv = "cxr14privacy_unique_af.csv" 
 
 config.af_inpainter_name = "circle"
-config.num_af_images = 1
+config.af_feature = "Support Device"
 
 # data
 config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
-config.data.limit_dataset_size = 99
+config.data.limit_dataset_size = 1770 # train data of DM 
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -33,14 +34,22 @@ af_classifier.gaussian_blur = False
 af_classifier.random_partial_crop = 0.5 # deactivated for feature computation 
 af_classifier.batch_size = 32 
 af_classifier.augment_private_images_to_balance = True
-af_classifier.max_epochs =50 
+af_classifier.max_epochs=5
 af_classifier.horizontal_flip_prop = 0.5
 af_classifier.vertical_flip_prop = 0.5
 af_classifier.num_workers = 15
 af_classifier.check_val_every_n_epoch = 5 # also used for learning rate annealing
 af_classifier.learning_rate_annealing = True 
 af_classifier.learning_rate_annealing_patience = 3 # only checked every af_classifier.check_val_every_n_epoch 
-af_classifier.mask_only = False # ignored if pii 
+af_classifier.best_path = "best.ckpt"
+
+# id classifier
+config.id_classifier = id_classifier = ml_collections.ConfigDict()
+id_classifier.early_stopping = af_classifier.early_stopping
+id_classifier.max_circles_per_image = 5 # one less than this value 
+id_classifier.batch_size = af_classifier.batch_size
+id_classifier.best_path = "id_best.ckpt"
+
 
 ## DM training -- more documentation at https://github.com/huggingface/diffusers/blob/main/examples/unconditional_image_generation/train_unconditional.py
 config.dm_training = dm_training = ml_collections.ConfigDict()
@@ -49,7 +58,7 @@ dm_training.center_crop = True
 dm_training.random_flip = False # horizontally
 dm_training.train_batch_size = 64
 dm_training.eval_batch_size = 8
-dm_training.num_epochs = 1000
+dm_training.num_epochs = 30 
 dm_training.save_images_epochs = 100
 dm_training.save_model_epochs = 100
 dm_training.eval_fairness_epochs = 100
@@ -91,7 +100,7 @@ privacy.cooldown_epochs = 0 # after a change - how long do you want to wait
 ## sampling
 config.sampling = sampling = ml_collections.ConfigDict()
 sampling.batch_size = 64
-sampling.N = 50 
+sampling.N = 100 
 sampling.ddpm_inference_steps = 100 
 
 config.evaluate = evaluate = ml_collections.ConfigDict()
