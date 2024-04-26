@@ -24,7 +24,7 @@ from log import logger
 from src import data
 from src.data.dataloader import get_dataset_from_csv, TestDataModule
 from utils import data_scaler, repeat_channels, save_copy_checkpoint, dict_to_json
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import resnet50, ResNet50_Weights, ResNet101_Weights
 from src.data.inpainter import get_inpainter
 from src.data.dataloader import AFClassificationDataset, DataModuleFromConfig
 from src.classifier.callbacks import LogInputImageCallback
@@ -164,7 +164,11 @@ def main(config):
     logger.info(f"Training Images: {len(dataset_train)}")
     logger.info(f"Validation Images: {len(dataset_val)}")
 
-    model = resnet50(num_classes=1000, weights=ResNet50_Weights.IMAGENET1K_V2)
+    if config.use_synthetic_af: 
+        model = resnet50(num_classes=1000, weights=ResNet50_Weights.IMAGENET1K_V2)
+    else:
+        model = resnet101(num_classes=1000, weights=ResNet101_Weights)
+
     model.fc = torch.nn.Linear(model.fc.in_features, out_features=dataset_val.n_classes)
     #model = resnet50(num_classes=dataset_val.n_classes)
 

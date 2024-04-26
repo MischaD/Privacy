@@ -196,7 +196,7 @@ def main(config):
         inputs_train_priv[i], _  = inpainter(None, inputs_train_priv[i])
         ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}.png"))
 
-    inputs_train_priv = vae.encode(inputs_train_priv).unsqueeze(dim=0)
+    inputs_train_priv = vae.encode(inputs_train_priv)
 
     inputs_train = torch.cat([inputs_train_pub, inputs_train_priv])
     labels_train = torch.cat([labels_train_pub, labels_train_priv])

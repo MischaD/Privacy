@@ -788,11 +788,12 @@ class DDPMPrivacyPipeline(DDPMPipeline):
             image = self.scheduler.step(model_output, t, image, generator=generator).prev_sample
 
         image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.cpu().permute(0, 2, 3, 1).numpy()
-        if output_type == "pil":
-            image = self.numpy_to_pil(image)
+        #image = image.cpu().permute(0, 2, 3, 1).numpy()
+        #if output_type == "pil":
+        #    image = self.numpy_to_pil(image)
 
-        if not return_dict:
-            return (image,)
+        #if not return_dict:
+        #    return (image,)
 
-        return ImagePipelineOutput(images=image)
+        #return ImagePipelineOutput(images=image)
+        return image

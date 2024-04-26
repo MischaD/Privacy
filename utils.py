@@ -434,7 +434,7 @@ class VAE:
 
         with torch.no_grad():
             encode = self.vae.encode(x.cuda())
-            batch = encode.latent_dist.sample()[0] *  self.vae.config.scaling_factor
+            batch = encode.latent_dist.sample() *  self.vae.config.scaling_factor
         if single_image: 
             batch = batch.squeeze(dim=0)
         return batch
