@@ -6,6 +6,15 @@ from collections import OrderedDict
 from torchxrayvision.models import model_urls, _Transition, _DenseBlock, op_norm, get_weights
 import torchxrayvision as xrv
 
+from typing import List
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from collections import OrderedDict
+from torchxrayvision.models import model_urls, _Transition, _DenseBlock, op_norm, get_weights
+import torchvision 
+import torchxrayvision as xrv
+
 
 class DenseNet(nn.Module):
     """Based on 
@@ -120,6 +129,7 @@ class DenseNet(nn.Module):
         self.features.add_module('norm5', nn.BatchNorm2d(num_features))
 
         # Linear layer
+        self.num_features = num_features
         self.classifier = nn.Linear(num_features, num_classes)
 
         # Official init from torch repo.
@@ -169,14 +179,23 @@ class DenseNet(nn.Module):
         out = F.adaptive_avg_pool2d(out, (1, 1)).view(features.size(0), -1)
         return out
 
+    def af_classification_mode(self):
+        for param in self.features.parameters():
+            param.requires_grad = False
+
+        self.classifier = nn.Linear(self.num_features, 1)
+
     def forward(self, x):
         # assumes -1 to 1, torch tensor of shape B x 3 x H x W 
         x = x.mean(axis=1, keepdim=False)
-        x = x.numpy()
-        x = self.transforms(x).transpose(0,1).transpose(1,2).unsqueeze(dim=0)
-        print(x.size())
-        print(x.min())
-        print(x.max())
+        x = x.cpu().numpy()
+        for i in range(x.shape[0]):
+            x[i] = self.transforms(x[i:i+1]).transpose(0,1).transpose(1,2).unsqueeze(dim=0)
+
+        x = torch.tensor(x).unsqueeze(dim=1).cuda()
+        #print(x.size())
+        #print(x.min())
+        #print(x.max())
 
         # feature extraction 
         features = self.features2(x)
@@ -187,7 +206,101 @@ class DenseNet(nn.Module):
         if hasattr(self, 'apply_sigmoid') and self.apply_sigmoid:
             out = torch.sigmoid(out)
 
-        if hasattr(self, "op_threshs") and (self.op_threshs != None):
-            out = torch.sigmoid(out)
-            out = op_norm(out, self.op_threshs)
+        #if hasattr(self, "op_threshs") and (self.op_threshs != None):
+        #    out = torch.sigmoid(out)
+        #    out = op_norm(out, self.op_threshs)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, weights: str = None, apply_sigmoid: bool = False):
+        super(ResNet, self).__init__()
+
+        self.weights = weights
+        self.apply_sigmoid = apply_sigmoid
+
+        if not self.weights in model_urls.keys():
+            possible_weights = [k for k in model_urls.keys() if k.startswith("resnet")]
+            raise Exception("Weights value must be in {}".format(possible_weights))
+
+        self.weights_filename_local = get_weights(weights)
+        self.weights_dict = model_urls[weights]
+        self.targets = model_urls[weights]["labels"]
+        self.pathologies = self.targets  # keep to be backward compatible
+
+        if self.weights.startswith("resnet101"):
+            self.model = torchvision.models.resnet101(num_classes=len(self.weights_dict["labels"]), pretrained=False)
+            # patch for single channel
+            self.model.conv1 = torch.nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        elif self.weights.startswith("resnet50"):
+            self.model = torchvision.models.resnet50(num_classes=len(self.weights_dict["labels"]), pretrained=False)
+            # patch for single channel
+            self.model.conv1 = torch.nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        try:
+            self.model.load_state_dict(torch.load(self.weights_filename_local))
+        except Exception as e:
+            print("Loading failure. Check weights file:", self.weights_filename_local)
+            raise e
+
+        if "op_threshs" in model_urls[weights]:
+            self.register_buffer('op_threshs', torch.tensor(model_urls[weights]["op_threshs"]))
+
+        self.upsample = nn.Upsample(size=(512, 512), mode='bilinear', align_corners=False)
+        self.model.fc = nn.Linear(self.model.fc.in_features, 1)
+
+        #self.eval()
+
+    def __repr__(self):
+        if self.weights is not None:
+            return "XRV-ResNet-{}".format(self.weights)
+        else:
+            return "XRV-ResNet"
+
+    def save_model(self, path): 
+        torch.save(self.model.state_dict(), path)
+
+    def load_model(self, path): 
+        self.model.load_state_dict(torch.load(path))
+
+    def features(self, x):
+        x = fix_resolution(x, 512, self)
+        warn_normalization(x)
+
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+
+        x = self.model.avgpool(x)
+        x = torch.flatten(x, 1)
+        return x
+
+    def af_classification_mode(self):
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        for param in self.model.fc.parameters():
+            param.requires_grad = True 
+            
+
+    def forward(self, x):
+        #x = fix_resolution(x, 512, self)
+        #warn_normalization(x)
+        x = x.mean(dim=1, keepdims=True)
+
+        out = self.model(x)
+
+        #if hasattr(self, 'apply_sigmoid') and self.apply_sigmoid:
+        #    out = torch.sigmoid(out)
+
+        #if hasattr(self, "op_threshs") and (self.op_threshs != None):
+        #    out = torch.sigmoid(out)
+        #    out = op_norm(out, self.op_threshs)
         return out

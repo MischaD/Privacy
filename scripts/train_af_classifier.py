@@ -166,10 +166,15 @@ def main(config):
 
     if config.use_synthetic_af: 
         model = resnet50(num_classes=1000, weights=ResNet50_Weights.IMAGENET1K_V2)
+        model.fc = torch.nn.Linear(model.fc.in_features, out_features=dataset_val.n_classes)
     else:
-        model = resnet101(num_classes=1000, weights=ResNet101_Weights)
+        #model = resnet101(num_classes=1000, weights=ResNet101_Weights)
+        #model = resnet50(num_classes=1000, weights=ResNet101_Weights)
+        from src.classifier.model import ResNet
+        #model = DenseNet(weights="densenet121-res224-all")
+        model = ResNet(weights="resnet50-res512-all")
+        model.af_classification_mode()
 
-    model.fc = torch.nn.Linear(model.fc.in_features, out_features=dataset_val.n_classes)
     #model = resnet50(num_classes=dataset_val.n_classes)
 
 
