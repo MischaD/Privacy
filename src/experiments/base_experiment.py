@@ -7,7 +7,7 @@ import math
 config = ml_collections.ConfigDict()
 config.seed = 42
 config.base_dir = "/vol/ideadata/ed52egek/data/chestxray14/" if os.path.abspath(".").startswith("/vol") else "/home/atuin/b180dc/b180dc10/data/chestxray14/"
-config.data_csv = "cxr14privacy.csv" 
+config.data_csv = "cxr14supportdevices.csv"
 config.private_data_csv = "cxr14privacy_unique_af.csv" 
 
 config.af_inpainter_name = "circle"
@@ -17,7 +17,7 @@ config.af_feature = "Support Device"
 config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
-config.data.limit_dataset_size = 99#1770 # train data of DM 
+config.data.limit_dataset_size = 1770 #99#1770 # train data of DM 
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -25,7 +25,7 @@ saf.training_data_probability = 0.5
 saf.radius = int(9 * 2 ** (math.log2(config.data.image_size) - 6))# 72 for 512 images
 saf.seed = 30
 
-# af classiferdd
+# af classifer
 config.af_classifier = af_classifier = ml_collections.ConfigDict()
 af_classifier.early_stopping = "val_loss"
 af_classifier.lr = 1e-3
@@ -58,11 +58,9 @@ dm_training.center_crop = True
 dm_training.random_flip = False # horizontally
 dm_training.train_batch_size = 64
 dm_training.eval_batch_size = 8
-dm_training.num_epochs = 1000 
-dm_training.save_images_epochs = 100
-dm_training.save_model_epochs = 100
-dm_training.eval_fairness_epochs = 100
-dm_training.eval_fairness = False # activate fairnesss evaluation, see config.privacy
+dm_training.num_epochs = 50001
+dm_training.save_images_epochs = 5000
+dm_training.save_model_epochs = 5000
 dm_training.gradient_accumulation_steps = 1
 dm_training.learning_rate = 1e-4
 dm_training.lr_scheduler = "constant" # "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"
@@ -83,8 +81,6 @@ dm_training.ddpm_beta_schedule = "linear"
 dm_training.ddpm_beta_end = 0.02
 dm_training.layers_per_block = 2
 dm_training.num_down_blocks = 6
-dm_training.checkpointing_steps = 50000 # checkpoint steps to be used with --resume_from_checkpoint
-dm_training.checkpoints_total_limit = 2 # != epoch saving.  
 
 config.privacy = privacy = ml_collections.ConfigDict()
 privacy.online_M = 16 # number for prediction for each t timestep 
