@@ -17,7 +17,7 @@ config.af_feature = "Support Device"
 config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
-config.data.limit_dataset_size = 1770 #99#1770 # train data of DM 
+config.data.limit_dataset_size = 10 #1770 #99#1770 # train data of DM 
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -85,7 +85,7 @@ dm_training.num_down_blocks = 6
 config.privacy = privacy = ml_collections.ConfigDict()
 privacy.online_M = 16 # number for prediction for each t timestep 
 privacy.evaluation_M = 16
-privacy.evaluation_step_size = 0.1 # at sampling time 
+privacy.evaluation_step_size = 0.01 # at sampling time 
 
 #
 ## sampling

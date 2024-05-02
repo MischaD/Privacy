@@ -14,10 +14,10 @@ def main(config):
         "method": "random",
         "metric": {"goal": "maximize", "name": "test_acc"},
         "parameters": {
-            "af_classifier.lr": {"max": 0.05, "min": 0.0005},
+            "af_classifier.lr": {"max": 0.03, "min": 0.0005},
             "af_classifier.augmix_severity": {"values": [-1,]},
             "af_classifier.learning_rate_annealing_patience": {"values": [3, 5, 10]},
-            "af_classifier.max_epochs": {"values": [5, 10, 30, 50]}, # shorter traininig for ret - todo include in config file 
+            "af_classifier.max_epochs": {"values": [10, 30, 50, 100]}, # shorter traininig for ret - todo include in config file 
             "af_classifier.gaussian_blur": {"values": [True, False]},
         },
     }
@@ -48,6 +48,8 @@ def get_args():
     parser.add_argument("--n_sweeps", type=int, help="number of sweeps to perform")
     parser.add_argument("--tags", type=str, default="", help="wandb tags")
     parser.add_argument("--use_synthetic_af",  action='store_true')
+    parser.add_argument("--af_classifier.finetune_full_model",  action='store_true')
+
     #parser.add_argument("--af_inpainter_name", type=str)
     return parser.parse_args()
 

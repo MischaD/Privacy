@@ -95,7 +95,7 @@ def main(rank, world_size, config):
     batches = [image_nums[i:i+bs] for i in range(0, len(image_nums), bs)]
 
     pipeline = LDMPipeline(vae=vae, unet=unet, scheduler=noise_scheduler).to(vae.vae.device)
-    generator = torch.Generator(device=pipeline.device)#.manual_seed(rank)
+    generator = torch.Generator(device=pipeline.device).manual_seed(rank)
     # Train!
     for batch in tqdm(batches, "sampling"):
         images = pipeline(

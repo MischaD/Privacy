@@ -6,7 +6,7 @@ from src.data.inpainter import get_inpainter
 from einops import repeat
 
 
-def fairness_classifier(config):
+def get_classifier_forward(config, return_seperate=False):
     """Loads fairnes classifier according to config and path given by config.fairness_classifier_path"""
     pl_model = LightningSAFClassifier.load_from_checkpoint(config.af_classifier_path).to("cuda:0")
     pl_model = pl_model.eval()
@@ -34,5 +34,8 @@ def fairness_classifier(config):
         with torch.no_grad():
             predictions_batch_id, y_hats_batch_id = pl_model_id.predict(batch)
 
-        return torch.logical_and(predictions_batch, predictions_batch_id)
+        if not return_seperate: 
+            return torch.logical_and(predictions_batch, predictions_batch_id)
+        else: 
+            return {"id":predictions_batch_id, "af": predictions_batch}
     return fairness_forward 

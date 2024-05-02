@@ -787,7 +787,7 @@ class DDPMPrivacyPipeline(DDPMPipeline):
             # 2. compute previou image: x_t -> x_t-1
             image = self.scheduler.step(model_output, t, image, generator=generator).prev_sample
 
-        image = (image / 2 + 0.5).clamp(0, 1)
+        #image = (image / 2 + 0.5).clamp(0, 1)
         #image = image.cpu().permute(0, 2, 3, 1).numpy()
         #if output_type == "pil":
         #    image = self.numpy_to_pil(image)

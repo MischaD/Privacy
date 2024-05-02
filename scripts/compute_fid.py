@@ -1,80 +1,91 @@
-# input image uint8
-from torchmetrics.image.fid import FrechetInceptionDistance
-from src.data.dataloader import get_dataset_from_csv
 import os
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 import torch
 import argparse
-import pandas as pd
-from tqdm import tqdm
-from torchvision import transforms
-from PIL import Image
-from utils import main_setup
+import json
+from src.evaluation.fid import calculate_fid_given_paths
+from src.data.dataloader import hash_dataset_path
+import random
 from log import logger
-from utils import dict_to_json, json_to_dict, to_uint8
+from tqdm import tqdm
+from PIL import Image
+import os
+import torch
+import torchxrayvision as xrv
+import pandas as pd
+from utils import main_setup, dict_to_json, json_to_dict
+
+from pytorch_fid.inception import InceptionV3
 
 
-
-class ImagePathDataset(torch.utils.data.Dataset):
-    def __init__(self, base_path, files, transforms=None):
-        self.base_path = base_path
-        self.files = files
-        self.transforms = transforms
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, i):
-        path = self.files[i]
-        img = Image.open(os.path.join(self.base_path, path)).convert("RGB")
-        if self.transforms is not None:
-            img = self.transforms(img)
-        return img
+IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
+                    'tif', 'tiff', 'webp'}
 
 
 def main(config):
-    real_image_paths = list(pd.read_csv(os.path.join(config.base_dir, config.data_csv))["path"])
-    real_image_ds = ImagePathDataset(os.path.dirname(os.path.join(config.base_dir,config.data_csv)), real_image_paths, transforms=transforms.Compose([transforms.ToTensor(), to_uint8]))
+    device = torch.device('cuda')
+    if config.num_workers is None:
+        try:
+            num_cpus = len(os.sched_getaffinity(0))
+        except AttributeError:
+            # os.sched_getaffinity is not available under Windows, use
+            # os.cpu_count instead (which may not return the *available* number
+            # of CPUs).
+            num_cpus = os.cpu_count()
 
-    fake_img_dir = config.samples_path if config.samples_path != "" else os.path.join(os.path.dirname(config.log_dir), "final", "samples")
-    fake_image_paths = os.listdir(fake_img_dir)
-    fake_image_ds = ImagePathDataset(fake_img_dir, fake_image_paths, transforms=transforms.Compose([transforms.ToTensor(), to_uint8]))
+        num_workers = min(num_cpus, 8) if num_cpus is not None else 0
+    else:
+        num_workers = config.num_workers
 
-    real_images = []
-    for i in tqdm(range(len(real_image_ds)), "Loading Real Images"): 
-        real_images.append(real_image_ds[i])
-        #if i > 100: 
-        #    break
 
-    fake_images = []
-    for i in tqdm(range(len(fake_image_ds)), "Loading Fake Images"): 
-        fake_images.append(fake_image_ds[i])
-        #if i > 100: 
-        #    break
+    results = {}
+    model_name = config.samples_path.split("log/"+config.EXP_NAME + "/")[-1] # everything after log/EXP_NAME e.g. final/samples
+    results[model_name] = {}
 
-    real_image_ds = torch.stack(real_images)
-    fake_image_ds = torch.stack(fake_images)
+    for fid_model in ["inception", "xrv"]:
+        if fid_model == "xrv":
+            dims = 1024
+            model = xrv.models.DenseNet(weights="densenet121-res224-all").to(device)
+        elif fid_model == "inception":
+            dims = 2048
+            block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
+            model = InceptionV3([block_idx]).to(device)
 
-    fid = FrechetInceptionDistance(feature=2048)
-    fid.update(real_image_ds, real=True)
-    fid.update(fake_image_ds, real=False)
-    fid_val = float(fid.compute())
+        src_path = os.path.join(config.base_dir,config.data_csv)
+        fid_value = calculate_fid_given_paths([src_path, config.samples_path],
+                                              config.batch_size,
+                                              device,
+                                              fid_model,
+                                              model=model,
+                                              dims=dims,
+                                              num_workers=num_workers)
+        logger.info(f"FID of the following paths: {src_path} -- {config.samples_path}")
+        logger.info(f'{fid_model} FID: {fid_value} --> ${fid_value:.1f}$')
+        results[model_name]["fid_" + fid_model] = fid_value
+
 
     results_json_path = os.path.join(os.path.dirname(config.log_dir), "results_test_diffusers.json")
     if os.path.isfile(results_json_path): 
-        results = json_to_dict(results_json_path)
+        old_results = json_to_dict(results_json_path)
     else: 
-        results = {}
+        old_results = {}
 
-    results["fid"] = fid_val
-    logger.info(f"FID: {fid_val}")
-    logger.info(f"Saving FID to {results_json_path}")
+    results = {**old_results, **results}
     dict_to_json(results, results_json_path)
+    logger.info(f"Saving FID to {results_json_path}")
+
 
 def get_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
+    parser.add_argument("--data_csv",  default="cxr14privacy.csv")
     parser.add_argument("--samples_path", type=str, default="", help="Path to synthetic samples")
+    parser.add_argument('--batch-size', type=int, default=50,
+                        help='Batch size to use')
+    parser.add_argument('--num-workers', type=int, default=16,
+                    help=('Number of processes to use for data loading. '
+                            'Defaults to `min(8, num_cpus)`'))
     return parser.parse_args()
 
 

@@ -198,8 +198,8 @@ def main(config):
 
     inputs_train_priv = vae.encode(inputs_train_priv)
 
-    inputs_train = torch.cat([inputs_train_pub, inputs_train_priv])
-    labels_train = torch.cat([labels_train_pub, labels_train_priv])
+    inputs_train = torch.cat([inputs_train_pub.cpu(), inputs_train_priv.cpu()])
+    labels_train = torch.cat([labels_train_pub.cpu(), labels_train_priv.cpu()])
 
 #    # Preprocessing the datasets and DataLoaders creation.
 #    pre_inpaint_transform = lambda x: x  
@@ -263,6 +263,7 @@ def main(config):
         progress_bar.set_description(f"Epoch {epoch}")
         for step, batch in enumerate(train_dataloader):
             clean_images = batch.to(weight_dtype)
+
             # Sample noise that we'll add to the images
             noise = torch.randn(clean_images.shape, dtype=weight_dtype, device=clean_images.device)
             bsz = clean_images.shape[0]
@@ -307,32 +308,6 @@ def main(config):
                 progress_bar.update(1)
                 global_step += 1
 
-                if accelerator.is_main_process:
-                    if global_step % config.dm_training.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if config.dm_training.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(config.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
-
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= config.dm_training.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - config.dm_training.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
-
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(config.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
-
-                        save_path = os.path.join(config.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
-
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
             if config.dm_training.use_ema:
                 logs["ema_decay"] = ema_model.cur_decay_value
@@ -351,7 +326,7 @@ def main(config):
                     ema_model.store(unet.parameters())
                     ema_model.copy_to(unet.parameters())
 
-                pipeline = LDMPipeline(vae=vae, unet=model, scheduler=noise_scheduler)
+                pipeline = LDMPipeline(vae=vae, unet=unet, scheduler=noise_scheduler)
                 generator = torch.Generator(device=pipeline.device).manual_seed(0)
                 images = pipeline(
                     generator=generator,
@@ -401,14 +376,16 @@ def get_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
-    parser.add_argument("--data_csv",  default="cxr14privacy.csv")
+    parser.add_argument("--data_csv", help="Path to train data csv")
+    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
+    parser.add_argument("--data.limit_dataset_size",  type=int)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
     config = main_setup(args, name=os.path.basename(__file__).rstrip('.py'))
-    env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    if env_local_rank != -1 and env_local_rank != config.dm_training.local_rank:
-        config.dm_training.local_rank = env_local_rank
+    #env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    #if env_local_rank != -1 and env_local_rank != config.local_rank:
+    #    config.local_rank = env_local_rank
     main(config)

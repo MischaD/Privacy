@@ -173,7 +173,10 @@ def main(config):
         from src.classifier.model import ResNet
         #model = DenseNet(weights="densenet121-res224-all")
         model = ResNet(weights="resnet50-res512-all")
-        model.af_classification_mode()
+        if not config.af_classifier.finetune_full_model:    
+            model.af_classification_mode()
+        else: 
+            print("Finetuning full model")
 
     #model = resnet50(num_classes=dataset_val.n_classes)
 

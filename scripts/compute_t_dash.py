@@ -28,7 +28,7 @@ from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, is_accelerate_version, is_tensorboard_available, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 from utils import prepare_tdash_dataset, data_scaler, json_to_dict, dict_to_json
-from src.classifier.utils import fairness_classifier
+from src.classifier.utils import get_classifier_forward
 
 
 def check_if_sampled(t_dash, ddpm, fairness_forward, private_images, private_img_nums, batch_size, M, ddpm_num_inference_steps, accelerator, global_step, logtype="memorized"):
@@ -76,45 +76,51 @@ def check_if_sampled(t_dash, ddpm, fairness_forward, private_images, private_img
 
 
 def main(config):
-    batch_size = config.privacy.evaluation_M
-    n_inference_steps = config.sampling.ddpm_inference_steps
-    stepsize = config.privacy.evaluation_step_size
     model_dir = os.path.join(os.path.dirname(config.log_dir), config.model_dir)
-
+    results_dir = os.path.dirname(config.log_dir)
     out_path = os.path.join(model_dir, "privacy")#exp_path
+    os.makedirs(out_path, exist_ok=True)
 
     vae = VAE(device=f"cuda")
     unet = UNet2DModel.from_pretrained(
         os.path.join(model_dir, "unet")
     ).to(vae.vae.device)
     ddpm = DDPMPrivacyPipeline.from_pretrained(model_dir, unet=unet, vae=vae).to("cuda")
-    fairness_forward = fairness_classifier(config)
-    os.makedirs(out_path, exist_ok=True)
+    fairness_forward = get_classifier_forward(config, return_seperate=False)
+
+    batch_size = config.privacy.evaluation_M
+    n_inference_steps = config.sampling.ddpm_inference_steps
+    stepsize = config.privacy.evaluation_step_size
+
     t_dash_values = reversed(torch.linspace(0, 1 - stepsize, int(1/stepsize)))
  
     #inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=True, add_private_imgs=False)
     vae = VAE()
     if config.use_synthetic_af:
-        inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None)
+        inputs_train_priv, _ = get_dataset_from_csv(config, split="train", limit=1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
+
         #apply SAF to image
         inpainter = get_inpainter(config)
+
+        # inpaint and log private images
         for i in range(len(inputs_train_priv)):
             # apply SAF and compute latent
-            transforms.ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}_raw.png"))
+            transforms.ToPILImage()(inputs_train_priv[i]).save(os.path.join(out_path, f"private_img_{i}_raw.png"))
             inputs_train_priv[i], _  = inpainter(None, inputs_train_priv[i])
-            transforms.ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}.png"))
+            transforms.ToPILImage()(inputs_train_priv[i]).save(os.path.join(out_path, f"private_img_{i}.png"))
     else: 
         #
-        inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
+        inputs_train_priv, _ = get_dataset_from_csv(config, split="train", limit=-1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
 
+        # log private images
+        for i in range(len(inputs_train_priv)):
+            transforms.ToPILImage()(inputs_train_priv[i]).save(os.path.join(out_path, f"private_img_{i}.png"))
     logger.info(f"Number of private images: {inputs_train_priv}")
 
-    # results dict
-    results_json_path = os.path.join(os.path.dirname(out_path), "results_test_diffusers.json")
-    if os.path.isfile(results_json_path): 
-        results = json_to_dict(results_json_path)
-    else: 
-        results = {}
+    # prepare results dict
+    results = {}
+    model_name = config.model_dir.split("log/"+config.EXP_NAME + "/")[-1] # everything after log/EXP_NAME e.g. final/samples
+    results[model_name] = {}
 
     cnt = 0
     for img_cnt, images in enumerate(inputs_train_priv): 
@@ -131,7 +137,7 @@ def main(config):
 
         synth_images = []
         for t_dash in t_dash_values:  
-            images_prediction_latent = ddpm(private_image=images, t_dash=t_dash, num_inference_steps=n_inference_steps)[0]
+            images_prediction_latent = ddpm(private_image=images, t_dash=t_dash, num_inference_steps=n_inference_steps)
             images_prediction = vae.decode(images_prediction_latent)
 
             # save images
@@ -146,7 +152,6 @@ def main(config):
         # tdash computation
         predictions = []
         for batch in synth_images: 
-            batch = data_scaler(batch.float() / 255.)
             batch = batch.cuda()
             predictions_batch = fairness_forward(batch)
             predictions.append(predictions_batch.cpu().sum())
@@ -157,11 +162,19 @@ def main(config):
             t_dash = torch.Tensor([1.0])
         else: 
             t_dash = t_dash_values[torch.argmax((predictions != 0).float())]
-        results[f"t_dash_img_{img_cnt}"] = {"values": t_dash_values.tolist(), "predictions": predictions.tolist(), "t_dash":float(t_dash)}
-        logger.info(f"t_dash_img_{img_cnt}: {float(t_dash)}")
-    logger.info(f"Saving metadata to {results_json_path}")
-    dict_to_json(results, results_json_path)
 
+        results[model_name][f"t_dash_img_{img_cnt}"] = {"values": t_dash_values.tolist(), "predictions": predictions.tolist(), "t_dash":float(t_dash)}
+        logger.info(f"t_dash_img_{img_cnt}: {float(t_dash)}")
+
+    # save results 
+    results_json_path = os.path.join(results_dir, "results_test_diffusers.json")
+    if os.path.isfile(results_json_path): 
+        old_results = json_to_dict(results_json_path)
+    else: 
+        old_results = {}
+    results = {**old_results, **results}
+    dict_to_json(results, results_json_path)
+    logger.info(f"Saving Results to {results_json_path}")
 
 
 def get_args():
