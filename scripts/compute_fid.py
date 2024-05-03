@@ -52,17 +52,32 @@ def main(config):
             model = InceptionV3([block_idx]).to(device)
 
         src_path = os.path.join(config.base_dir,config.data_csv)
-        fid_value = calculate_fid_given_paths([src_path, config.samples_path],
+        #first path real data
+
+        fid_value_train = calculate_fid_given_paths([src_path, config.samples_path],
                                               config.batch_size,
                                               device,
                                               fid_model,
                                               model=model,
                                               dims=dims,
-                                              num_workers=num_workers)
+                                              num_workers=num_workers, 
+                                              split="train")
         logger.info(f"FID of the following paths: {src_path} -- {config.samples_path}")
-        logger.info(f'{fid_model} FID: {fid_value} --> ${fid_value:.1f}$')
-        results[model_name]["fid_" + fid_model] = fid_value
+        logger.info(f'{fid_model} FID split=train: {fid_value_train} --> ${fid_value_train:.1f}$')
+        results[model_name]["fid_train_" + fid_model] = fid_value_train
 
+        fid_value_test = calculate_fid_given_paths([src_path, config.samples_path],
+                                              config.batch_size,
+                                              device,
+                                              fid_model,
+                                              model=model,
+                                              dims=dims,
+                                              num_workers=num_workers, 
+                                              split="test")
+
+        logger.info(f"FID of the following paths: {src_path} -- {config.samples_path}")
+        logger.info(f'{fid_model} FID: {fid_value_test} --> ${fid_value_test:.1f}$')
+        results[model_name]["fid_test_" + fid_model] = fid_value_test
 
     results_json_path = os.path.join(os.path.dirname(config.log_dir), "results_test_diffusers.json")
     if os.path.isfile(results_json_path): 

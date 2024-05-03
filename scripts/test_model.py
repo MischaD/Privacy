@@ -89,7 +89,7 @@ def main(config):
         pos_indices = torch.arange(len(predictions))[predictions.cpu()]
 
         # some positive predictions. Plot the first 
-        pos_images = [dataset[i] for i in pos_indices[:24]]
+        pos_images = [dataset[i] for i in pos_indices[:333]]
         pos_images = torch.stack(pos_images)
         from torchvision.utils import make_grid
         pos_img = make_grid(pos_images, nrow=8)

@@ -12,3 +12,5 @@ src/experiments/01_find_best_dataset_size/sessiontrain_af_classifier_log.txt
 src/experiments/01_find_best_dataset_size/sessiontrain_saf_classifier_log.txt
 notebooks/debug.ipynb
 .vscode/launch.json
+sync.sh
+.vscode/launch.json

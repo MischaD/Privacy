@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 from datetime import timedelta
 from pathlib import Path
-from utils import main_setup
+from utils import main_setup, dict_to_json, json_to_dict
 from log import logger
 from einops import repeat
 from utils import VAE, get_model
@@ -134,14 +134,20 @@ def main(config):
             os.makedirs(config.output_dir, exist_ok=True)
 
     # Initialize the model
-    block_out_channels = list((128, 128, 256, 256, 512, 512))
-    block_out_channels = tuple(block_out_channels[:config.dm_training.num_down_blocks])
-
     model = get_model(config)
     num_trainable_params = sum(
         p.numel() for p in model.parameters() if p.requires_grad
     )
     logger.info(f"Num trainable params: {num_trainable_params}")
+    results = {}
+    results["num_trainable_params"]= num_trainable_params
+    results_json_path = os.path.join(os.path.dirname(config.log_dir), "results_test_diffusers.json")
+    if os.path.isfile(results_json_path): 
+        old_results = json_to_dict(results_json_path)
+    else: 
+        old_results = {}
+    results = {**old_results, **results}
+    dict_to_json(results, results_json_path)
 
     # Create EMA for the model.
     if config.dm_training.use_ema:
@@ -186,7 +192,7 @@ def main(config):
 
     vae = VAE()
 
-    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae)
+    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae, csv_path=config.data_csv)
     inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
 
     inpainter = get_inpainter(config)
@@ -212,6 +218,13 @@ def main(config):
     dataset = inputs_train
     logger.info(f"Dataset size: {len(dataset)}. Number of private images: {len(inputs_train_priv)}")
 
+    abs_batch_size = config.dm_training.train_batch_size * torch.cuda.device_count()
+    num_epochs = math.ceil(abs_batch_size * config.dm_training.num_steps / len(dataset))
+    save_model_epochs = math.ceil(abs_batch_size * config.dm_training.save_model_steps / len(dataset))
+    save_images_epochs = math.ceil(abs_batch_size * config.dm_training.save_images_steps / len(dataset))
+    
+    logger.info(f"Train for {num_epochs} epochs, save model every {save_model_epochs} and images every {save_images_epochs} epochs.")
+
     train_dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=config.dm_training.train_batch_size, shuffle=True, num_workers=0,
     )
@@ -221,7 +234,7 @@ def main(config):
         config.dm_training.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=config.dm_training.lr_warmup_steps * config.dm_training.gradient_accumulation_steps,
-        num_training_steps=(len(train_dataloader) * config.dm_training.num_epochs),
+        num_training_steps=(len(train_dataloader) * num_epochs),
     )
 
     # Prepare everything with our `accelerator`.
@@ -240,12 +253,12 @@ def main(config):
 
     total_batch_size = config.dm_training.train_batch_size * accelerator.num_processes * config.dm_training.gradient_accumulation_steps
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config.dm_training.gradient_accumulation_steps)
-    max_train_steps = config.dm_training.num_epochs * num_update_steps_per_epoch
+    max_train_steps = num_epochs * num_update_steps_per_epoch
 
     logger.info("***** Running training *****")
     logger.info(f"  Num down blocks = {config.dm_training.num_down_blocks}")
     logger.info(f"  Num examples = {len(dataset)}")
-    logger.info(f"  Num Epochs = {config.dm_training.num_epochs}")
+    logger.info(f"  Num Epochs = {num_epochs}")
     logger.info(f"  Instantaneous batch size per device = {config.dm_training.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {config.dm_training.gradient_accumulation_steps}")
@@ -257,7 +270,7 @@ def main(config):
     first_epoch = 0
 
     # Train!
-    for epoch in range(first_epoch, config.dm_training.num_epochs):
+    for epoch in range(first_epoch, num_epochs):
         model.train()
         progress_bar = tqdm(total=num_update_steps_per_epoch, disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
@@ -319,7 +332,7 @@ def main(config):
 
         # Generate sample images for visual inspection
         if accelerator.is_main_process:
-            if epoch % config.dm_training.save_images_epochs == 0 or epoch == config.dm_training.num_epochs - 1:
+            if epoch % save_images_epochs == 0 or epoch == num_epochs - 1:
                 unet = accelerator.unwrap_model(model)
 
                 if config.dm_training.use_ema:
@@ -346,7 +359,7 @@ def main(config):
                     step=global_step,
                 )
 
-            if epoch % config.dm_training.save_model_epochs == 0 or epoch == config.dm_training.num_epochs - 1:
+            if epoch % save_model_epochs == 0 or epoch == num_epochs - 1:
                 # save the model
                 unet = accelerator.unwrap_model(model)
 
@@ -359,7 +372,7 @@ def main(config):
                     scheduler=noise_scheduler,
                 )
 
-                if epoch != config.dm_training.num_epochs - 1:
+                if epoch != num_epochs - 1:
                     pipeline.save_pretrained(os.path.join(config.output_dir, f"epoch-{epoch:05}"))
                 else: 
                     logger.info(f"Saving final model to: {config.output_dir} and {config.log_dir}")

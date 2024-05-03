@@ -457,7 +457,7 @@ class VAE:
 
 def get_model(config): 
     # Initialize the model
-    block_out_channels = list((128, 128, 256, 256, 512, 512))
+    block_out_channels = config.dm_training.block_out_channels 
     block_out_channels = tuple(block_out_channels[:config.dm_training.num_down_blocks])
     down_block_types = tuple(list((
             "DownBlock2D",

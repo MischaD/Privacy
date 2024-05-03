@@ -248,7 +248,7 @@ def calculate_activation_statistics(files, model, batch_size=50, dims=2048,
 
 
 def compute_statistics_of_path(path, model, batch_size, dims, device,
-                               num_workers=1, fid_model="xrv"):
+                               num_workers=1, fid_model="xrv", split="all"):
 
     if path.endswith('.npz'):
         with np.load(path) as f:
@@ -256,6 +256,8 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
     else:
         if path.endswith(".csv"):
             df = pd.read_csv(path)
+            if split != "all": 
+                df = df[df.split == split]
             files = df["path"].to_list()
             files = [os.path.join(os.path.dirname(path), file) for file in files]
         else:
@@ -272,14 +274,14 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
     return m, s
 
 
-def calculate_fid_given_paths(paths, batch_size, device, fid_model, model, dims, num_workers=1):
-    """Calculates the FID of two paths"""
+def calculate_fid_given_paths(paths, batch_size, device, fid_model, model, dims, num_workers=1, split="all"):
+    """Calculates the FID of two paths. Assumes first path to be real data"""
     for p in paths:
         if not os.path.exists(p):
             raise RuntimeError('Invalid path: %s' % p)
 
     m1, s1 = compute_statistics_of_path(paths[0], model, batch_size,
-                                        dims, device, num_workers, fid_model)
+                                        dims, device, num_workers, fid_model, split)
     m2, s2 = compute_statistics_of_path(paths[1], model, batch_size,
                                         dims, device, num_workers, fid_model)
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)

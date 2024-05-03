@@ -17,7 +17,7 @@ config.af_feature = "Support Device"
 config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
-config.data.limit_dataset_size = 10 #1770 #99#1770 # train data of DM 
+config.data.limit_dataset_size = 28007 #875 #1750 #3500 #7001#14003 #28007 #1770 #99#1770 # train data of DM 
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -54,13 +54,20 @@ id_classifier.best_path = "id_best.ckpt"
 ## DM training -- more documentation at https://github.com/huggingface/diffusers/blob/main/examples/unconditional_image_generation/train_unconditional.py
 config.dm_training = dm_training = ml_collections.ConfigDict()
 dm_training.resolution = 64  
+
+# model size
+dm_training.layers_per_block = 2
+dm_training.num_down_blocks = 6
+dm_training.block_out_channels = list((128, 128, 256, 256, 512, 512))
+
 dm_training.center_crop = True
 dm_training.random_flip = False # horizontally
 dm_training.train_batch_size = 64
 dm_training.eval_batch_size = 8
-dm_training.num_epochs = 50001
-dm_training.save_images_epochs = 5000
-dm_training.save_model_epochs = 50000
+dm_training.save_model_steps = 30000 # waits for epoch to finish
+dm_training.save_images_steps = 30000 # waits for epoch to finish
+dm_training.num_steps = 150000 # waits for epoch to finish
+
 dm_training.gradient_accumulation_steps = 1
 dm_training.learning_rate = 1e-4
 dm_training.lr_scheduler = "constant" # "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"
@@ -79,8 +86,7 @@ dm_training.ddpm_num_steps = 1000
 dm_training.ddpm_num_inference_steps = 100
 dm_training.ddpm_beta_schedule = "linear"
 dm_training.ddpm_beta_end = 0.02
-dm_training.layers_per_block = 2
-dm_training.num_down_blocks = 6
+
 
 config.privacy = privacy = ml_collections.ConfigDict()
 privacy.online_M = 16 # number for prediction for each t timestep 
