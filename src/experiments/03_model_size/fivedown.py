@@ -4,9 +4,8 @@ config.data.limit_dataset_size = 1770
 
 # model size
 config.dm_training.layers_per_block = 2
-config.dm_training.num_down_blocks = 6
+config.dm_training.num_down_blocks = 5
 config.dm_training.block_out_channels = list((128, 128, 256, 256, 512, 512))
-#config.dm_training.block_out_channels = list((64, 64, 128, 128, 256, 256))
 
 # 113_675_524  #6
 # 071_439_108  #5
