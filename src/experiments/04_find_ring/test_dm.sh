@@ -18,13 +18,12 @@ conda activate $WORK/conda/privacy
 cd $WORK/pycharm/latent-privacy
 
 export PYTHONPATH=$PWD
-EXP_NAMES=("fivedown_one_lpp" "fivedown" "fourdown" "halfchannels" "onelayerperblock")
-EXP_NAME=${EXP_NAMES[$SLURM_ARRAY_TASK_ID]}
-EXPFILE=src/experiments/03_model_size/${EXP_NAME}.py
-           
-CUR_EXP_NAME=e03_modelsize_${EXP_NAME}
+
+EXPFILE=src/experiments/04_find_ring/find_ring.py
+CUR_EXP_NAME="e04_modelsize_find_ring"
+
 
 python ./scripts/sample.py $EXPFILE $CUR_EXP_NAME --model_dir=final
 python ./scripts/compute_fid.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples
-python ./scripts/test_model.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples --af_classifier_path=log/af_best.ckpt --id_classifier_path=log/id_best.ckpt
-python ./scripts/compute_t_dash.py $EXPFILE $CUR_EXP_NAME --use_synthetic_af --model_dir=final --af_classifier_path=log/af_dev.ckpt --id_classifier_path=log/id_best.ckpt
+python ./scripts/test_model.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples --af_classifier_path=log/supdev_best.ckpt --id_classifier_path=log/id_best.ckpt
+python ./scripts/compute_t_dash.py $EXPFILE $CUR_EXP_NAME --model_dir=final --af_classifier_path=log/supdev_best.ckpt --id_classifier_path=log/id_best.ckpt

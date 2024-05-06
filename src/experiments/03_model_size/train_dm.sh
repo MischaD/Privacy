@@ -28,4 +28,4 @@ CUR_EXP_NAME="e03_modelsize_${EXP_NAME}"
 
 echo $CUR_EXP_NAME
 echo $EXPFILE
-accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py ${EXPFILE} ${CUR_EXP_NAME} --data.limit_dataset_size=1770
+accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py ${EXPFILE} ${CUR_EXP_NAME} --data.limit_dataset_size=1770 --use_synthetic_af

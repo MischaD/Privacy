@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --time=24:00:00
-#SBATCH --job-name=TrainDM
+#SBATCH --job-name=TrainDMFindRing
 #SBATCH --ntasks=1
 #SBATCH --partition=a100
 #SBATCH --gres=gpu:a100:8
@@ -14,10 +14,16 @@ export https_proxy=http://proxy.rrze.uni-erlangen.de:80
 module load python/3.9-anaconda
 module load cuda
 
+echo ${SLURM_ARRAY_TASK_ID}
+
 conda activate $WORK/conda/privacy
 cd $WORK/pycharm/latent-privacy
-
 export PYTHONPATH=$PWD
 
+EXPFILE=src/experiments/04_find_ring/find_ring.py
 
-accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py src/experiments/base_experiment.py e00_learning_rate  --use_synthetic_af
+CUR_EXP_NAME="e04_modelsize_find_ring"
+
+echo $CUR_EXP_NAME
+echo $EXPFILE
+accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py ${EXPFILE} ${CUR_EXP_NAME}

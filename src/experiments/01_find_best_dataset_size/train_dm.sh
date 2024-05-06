@@ -26,4 +26,4 @@ CUR_EXP_NAME="e01_dssize_${EXPPATHS[$SLURM_ARRAY_TASK_ID]}"
 
 echo $CUR_EXP_NAME
 
-accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py src/experiments/base_experiment.py ${CUR_EXP_NAME} --data.limit_dataset_size=${EXPPATHS[$SLURM_ARRAY_TASK_ID]}
+accelerate launch --main_process_port=25801 ./scripts/train_unconditional.py src/experiments/base_experiment.py ${CUR_EXP_NAME} --data.limit_dataset_size=${EXPPATHS[$SLURM_ARRAY_TASK_ID]} --use_synthetic_af
