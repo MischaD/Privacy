@@ -100,6 +100,8 @@ def main(config):
         old_results = json_to_dict(results_json_path)
     else: 
         old_results = {}
+
+    results = {"test-model":results}
     results = {**old_results, **results}
     dict_to_json(results, results_json_path)
     logger.info(f"Saving Results to {results_json_path}")

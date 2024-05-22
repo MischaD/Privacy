@@ -85,6 +85,7 @@ def main(config):
     else: 
         old_results = {}
 
+    results = {"fid":results}
     results = {**old_results, **results}
     dict_to_json(results, results_json_path)
     logger.info(f"Saving FID to {results_json_path}")

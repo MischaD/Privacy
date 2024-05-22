@@ -1,0 +1,4 @@
+,path,split
+0,images/00000001_000.png,train
+0,images/00000002_000.png,val
+0,images/00000003_000.png,test

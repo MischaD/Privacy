@@ -18,6 +18,7 @@ config.data = data = ml_collections.ConfigDict()
 config.data.dataset_shuffle_seed = 10
 config.data.image_size = 512
 config.data.limit_dataset_size = 28007 #875 #1750 #3500 #7001#14003 #28007 #1770 #99#1770 # train data of DM 
+config.data.limit_private_dataset_size = 1
 
 # saf 
 saf = config.data.saf = ml_collections.ConfigDict()
@@ -27,6 +28,7 @@ saf.seed = 30
 
 # af classifer
 config.af_classifier = af_classifier = ml_collections.ConfigDict()
+af_classifier.weights = "cxr"
 af_classifier.early_stopping = "val_loss"
 af_classifier.lr = 1e-3
 af_classifier.augmix_severity = 3
@@ -97,7 +99,7 @@ privacy.evaluation_step_size = 0.01 # at sampling time
 ## sampling
 config.sampling = sampling = ml_collections.ConfigDict()
 sampling.batch_size = 64
-sampling.N = 30000 
+sampling.N = 30000
 sampling.ddpm_inference_steps = 100 
 
 config.evaluate = evaluate = ml_collections.ConfigDict()

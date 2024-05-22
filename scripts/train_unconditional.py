@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 from datetime import timedelta
 from pathlib import Path
-from utils import main_setup, dict_to_json, json_to_dict
+from utils import main_setup, dict_to_json, json_to_dict, safe_viz_array
 from log import logger
 from einops import repeat
 from utils import VAE, get_model
@@ -147,7 +147,10 @@ def main(config):
     else: 
         old_results = {}
     results = {**old_results, **results}
-    dict_to_json(results, results_json_path)
+
+    accelerator.wait_for_everyone() 
+    if accelerator.is_main_process:
+        dict_to_json(results, results_json_path)
 
     # Create EMA for the model.
     if config.dm_training.use_ema:
@@ -193,7 +196,7 @@ def main(config):
     vae = VAE()
 
     inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae, csv_path=config.data_csv)
-    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=1, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
+    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=config.data.limit_private_dataset_size, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
 
     if config.use_synthetic_af:
         # inpaint fingerprint in image
@@ -204,19 +207,17 @@ def main(config):
             inputs_train_priv[i], _  = inpainter(None, inputs_train_priv[i])
             ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}.png"))
 
-    inputs_train_priv = vae.encode(inputs_train_priv)
+    if len(inputs_train_priv) == 0: 
+        logger.info("Training diffusion model without private images.")
+        inputs_train = inputs_train_pub.cpu()
+        labels_train = labels_train_pub.cpu()
+    else: 
+        if accelerator.is_main_process:
+            safe_viz_array(inputs_train_priv[0], os.path.join(config.log_dir, "private_image.png"))
+        inputs_train_priv = vae.encode(inputs_train_priv)
+        inputs_train = torch.cat([inputs_train_pub.cpu(), inputs_train_priv.cpu()])
+        labels_train = torch.cat([labels_train_pub.cpu(), labels_train_priv.cpu()])
 
-    inputs_train = torch.cat([inputs_train_pub.cpu(), inputs_train_priv.cpu()])
-    labels_train = torch.cat([labels_train_pub.cpu(), labels_train_priv.cpu()])
-
-#    # Preprocessing the datasets and DataLoaders creation.
-#    pre_inpaint_transform = lambda x: x  
-#    inpainter = get_inpainter(config) 
-#    post_inpaint_transform = transforms.Normalize([0.5], [0.5])
-#    every_epoch_transform = transforms.RandomHorizontalFlip() if config.dm_training.random_flip else transforms.Lambda(lambda x: x)
-#
-#    dataset = AFFairnessSamplingDataset(config, inputs_train, labels_train, pre_inpaint_transform, inpainter, post_inpaint_transform, every_epoch_transform)
-#
     dataset = inputs_train
     logger.info(f"Dataset size: {len(dataset)}. Number of private images: {len(inputs_train_priv)}")
 

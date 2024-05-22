@@ -140,7 +140,10 @@ def get_dataset_from_csv(config, split, limit=-1, vae=None, return_labels=False,
 
     label_list = torch.cat(full_label_list)
 
-    inputs = load_data(config, full_img_list, vae)
+    if len(full_img_list) == 0: 
+        inputs = []
+    else: 
+        inputs = load_data(config, full_img_list, vae)
 
     if return_labels:
         return inputs, torch.tensor(label_list).unsqueeze(dim=1)

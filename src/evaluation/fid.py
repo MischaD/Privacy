@@ -72,9 +72,14 @@ class ImagePathDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, i):
         path = self.files[i]
-        img = Image.open(path).convert("RGB")
-        #if len(img.shape) == 2:
-        #    img = repeat(rearrange(img, "h w -> h w 1"), "h w 1 -> h w c", c=self.channels)
+        if isinstance(path, str): 
+            img = Image.open(path).convert("RGB")
+        else: 
+            img = path
+            # absolute hack: ToTensor does not work on torch tensor so just convert it to numpy first 
+            img = img.numpy()
+            img = rearrange(img, "c h w -> h w c")
+
         img = self.transforms(img)
         if self.fid_model == "xrv":
             img = ((img * 2) - 1) * 1024 
@@ -122,7 +127,7 @@ def get_activations(files, model, batch_size=50, dims=2048, device='cpu',
         transform = torchvision.transforms.Compose([TF.ToTensor(), TF.Resize(512), TF.CenterCrop(512)])
         channels = 1
     else:
-        transform = torchvision.transforms.Compose([TF.ToTensor()]) 
+        transform = torchvision.transforms.Compose([TF.ToTensor(), TF.Resize(299), TF.CenterCrop(299)]) 
         channels = 3
 
     dataset = ImagePathDataset(files, transforms=transform, channels=channels, fid_model=fid_model)
@@ -260,15 +265,19 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
                 df = df[df.split == split]
             files = df["path"].to_list()
             files = [os.path.join(os.path.dirname(path), file) for file in files]
+        elif path.endswith(".pt"):
+            files = torch.load(path)
         else:
             path = pathlib.Path(path)
-            files = [file for ext in IMAGE_EXTENSIONS
+            files = [str(file) for ext in IMAGE_EXTENSIONS
                        for file in path.rglob('*.{}'.format(ext))]
 
         if True: 
             logger.warning("Debug")
         random.shuffle(files)
         logger.info(f"Number of images: {len(files)}")
+        if len(files) == 0: 
+            return None, None 
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers, fid_model)
     return m, s
@@ -282,8 +291,16 @@ def calculate_fid_given_paths(paths, batch_size, device, fid_model, model, dims,
 
     m1, s1 = compute_statistics_of_path(paths[0], model, batch_size,
                                         dims, device, num_workers, fid_model, split)
+    if m1 is None: 
+        logger.info("FID Computation of m1 failed due to empty path")
+        return -1 
+
     m2, s2 = compute_statistics_of_path(paths[1], model, batch_size,
                                         dims, device, num_workers, fid_model)
+    if m2 is None: 
+        logger.info("FID Computation of m2 failed due to empty path")
+        return -1
+
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 
     return fid_value

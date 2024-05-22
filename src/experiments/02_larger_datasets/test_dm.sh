@@ -25,7 +25,7 @@ CUR_EXP_NAME="e02_dssize_${EXPPATHS[$SLURM_ARRAY_TASK_ID]}"
 echo $CUR_EXP_NAME
 
 #python ./scripts/sample.py $EXPFILE $CUR_EXP_NAME  --model_dir=final
-#python ./scripts/compute_fid.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples
-python ./scripts/test_model.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples --af_classifier_path=log/supdev_best.ckpt --id_classifier_path=log/id_best.ckpt
-python ./scripts/compute_t_dash.py $EXPFILE $CUR_EXP_NAME --use_synthetic_af --model_dir=final --af_classifier_path=log/sup_dev.ckpt --id_classifier_path=log/id_best.ckpt
+python ./scripts/compute_fid.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples
+#python ./scripts/test_model.py $EXPFILE $CUR_EXP_NAME --samples_path=log/${CUR_EXP_NAME}/final/samples --af_classifier_path=log/supdev_best.ckpt --id_classifier_path=log/id_best.ckpt
+#python ./scripts/compute_t_dash.py $EXPFILE $CUR_EXP_NAME --use_synthetic_af --model_dir=final --af_classifier_path=log/sup_dev.ckpt --id_classifier_path=log/id_best.ckpt
             

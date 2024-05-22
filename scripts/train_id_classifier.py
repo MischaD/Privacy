@@ -60,10 +60,10 @@ def apply_af(config, imgs, labels):
     
 def prepare_datasets(config):
     add_private_imgs = not config.use_synthetic_af
-
-    inputs_train, label_list_train = get_dataset_from_csv(config, "train", return_labels=True, add_private_imgs=add_private_imgs, limit=-1)
-    inputs_val, label_list_val = get_dataset_from_csv(config, "val", return_labels=True, add_private_imgs=add_private_imgs, limit=-1)
-    inputs_test, label_list_test = get_dataset_from_csv(config, "test", return_labels=True, add_private_imgs=add_private_imgs, limit=-1)
+    limit = 5000
+    inputs_train, label_list_train = get_dataset_from_csv(config, "train", return_labels=True, add_private_imgs=add_private_imgs, limit=limit)
+    inputs_val, label_list_val = get_dataset_from_csv(config, "val", return_labels=True, add_private_imgs=add_private_imgs, limit=limit)
+    inputs_test, label_list_test = get_dataset_from_csv(config, "test", return_labels=True, add_private_imgs=add_private_imgs, limit=limit)
 
     return (inputs_train, label_list_train), (inputs_val, label_list_val), (inputs_test, label_list_test)
 
@@ -130,9 +130,10 @@ def main(config):
 
     inputs_prv, label_list_prv = get_dataset_from_csv(config, "train", return_labels=True, add_public_imgs=False, add_private_imgs=True, limit=1, csv_path=config.private_data_csv)
 
-    train_ds = torch.cat([inputs_train, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_train))]), torch.cat([label_list_train,repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_train))])
-    val_ds = torch.cat([inputs_val, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_val))]), torch.cat([label_list_val,repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_val))])
-    test_ds = torch.cat([inputs_test, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_test))]), torch.cat([label_list_test,repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_test))])
+    inputs_train = inputs_train[:5000]
+    train_ds = torch.cat([inputs_train, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_train))]), torch.cat([torch.zeros_like(label_list_train),repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_train))])
+    val_ds = torch.cat([inputs_val, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_val))]), torch.cat([torch.zeros_like(label_list_val),repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_val))])
+    test_ds = torch.cat([inputs_test, repeat(inputs_prv, "1 c h w -> d c h w", d=len(inputs_test))]), torch.cat([torch.zeros_like(label_list_test),repeat(label_list_prv, "1 1 -> d 1", d=len(label_list_test))])
 
     dataset_train = IDClassificationDataset(config, inputs=train_ds[0], labels=train_ds[1], pre_inpaint_transform=data_transforms, inpainter=get_inpainter(config), post_inpaint_transform=data_transform_post_inp)
     dataset_val   = IDClassificationDataset(config, inputs=val_ds[0], labels=val_ds[1], pre_inpaint_transform=val_transforms, inpainter=get_inpainter(config), post_inpaint_transform=data_transform_post_inp)# 
