@@ -29,7 +29,9 @@ class LightningSAFClassifier(pl.LightningModule):
         return loss
 
     def training_epoch_end(self, outputs):
-        self.log("train_epoch_loss", torch.stack([x["loss"] for x in outputs]).mean().float())
+        self.log(
+            "train_epoch_loss", torch.stack([x["loss"] for x in outputs]).mean().float()
+        )
 
     def validation_step(self, batch, batch_idx):
         x = batch["image"]
@@ -38,7 +40,7 @@ class LightningSAFClassifier(pl.LightningModule):
         loss = self.criterion(y_hat.squeeze(dim=1), y.to(float))
         preds = (torch.sigmoid(y_hat).squeeze(dim=1) > 0.5) == y.squeeze()
 
-        acc = sum(preds)/len(preds)
+        acc = sum(preds) / len(preds)
         self.log("val_acc_step", acc)
         self.log("val_loss_step", loss.item())
         return preds
@@ -72,9 +74,9 @@ class LightningSAFClassifier(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=self.config.lr)
-        ret_dict = {"optimizer": optimizer, "monitor":"train_loss_step"}
-        if self.config.learning_rate_annealing: 
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+        ret_dict = {"optimizer": optimizer, "monitor": "train_loss_step"}
+        if self.config.learning_rate_annealing:
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             ret_dict["scheduler"] = scheduler
         return ret_dict
 
@@ -85,7 +87,7 @@ class LightningIDClassifier(pl.LightningModule):
         super().__init__()
         self.model = model
         self.config = config
-        self.criterion =  nn.BCEWithLogitsLoss()
+        self.criterion = nn.BCEWithLogitsLoss()
         self.save_hyperparameters()
         self.val_acc = 0
 
@@ -110,7 +112,11 @@ class LightningIDClassifier(pl.LightningModule):
         return loss
 
     def training_epoch_end(self, outputs):
-        self.log("train_epoch_loss", torch.stack([x["loss"] for x in outputs]).mean().float(), sync_dist=True)
+        self.log(
+            "train_epoch_loss",
+            torch.stack([x["loss"] for x in outputs]).mean().float(),
+            sync_dist=True,
+        )
 
     def validation_step(self, batch, batch_idx):
         x = batch["image"]
@@ -119,7 +125,7 @@ class LightningIDClassifier(pl.LightningModule):
         loss = self.criterion(y_hat.squeeze(dim=1), y.to(float))
         preds = (torch.sigmoid(y_hat).squeeze(dim=1) > 0.5) == y.squeeze()
 
-        acc = sum(preds)/len(preds)
+        acc = sum(preds) / len(preds)
         self.log("val_acc_step", acc)
         self.log("val_loss_step", loss.item())
         return preds
@@ -132,9 +138,9 @@ class LightningIDClassifier(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=self.config.lr)
-        ret_dict = {"optimizer": optimizer, "monitor":"train_epoch_loss"}
-        if self.config.learning_rate_annealing: 
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+        ret_dict = {"optimizer": optimizer, "monitor": "train_epoch_loss"}
+        if self.config.learning_rate_annealing:
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             ret_dict["scheduler"] = scheduler
         return ret_dict
 

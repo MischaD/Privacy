@@ -6,7 +6,7 @@ from log import logger
 import argparse
 
 
-def main(config): 
+def main(config):
     wandb.login()
 
     sweep_configuration = {
@@ -15,9 +15,15 @@ def main(config):
         "metric": {"goal": "maximize", "name": "test_acc"},
         "parameters": {
             "af_classifier.lr": {"max": 0.03, "min": 0.0005},
-            "af_classifier.augmix_severity": {"values": [-1,]},
+            "af_classifier.augmix_severity": {
+                "values": [
+                    -1,
+                ]
+            },
             "af_classifier.learning_rate_annealing_patience": {"values": [3, 5, 10]},
-            "af_classifier.max_epochs": {"values": [10, 30, 50, 100]}, # shorter traininig for ret - todo include in config file 
+            "af_classifier.max_epochs": {
+                "values": [10, 30, 50, 100]
+            },  # shorter traininig for ret - todo include in config file
             "af_classifier.gaussian_blur": {"values": [True, False]},
         },
     }
@@ -29,8 +35,8 @@ def main(config):
 
 def main_sweep_classifier():
     wandb.init(project="privacy")
-    for k, v in wandb.config.items(): 
-        # automate overwriting of config.x.y.z = wandb.config.'x.y.z' 
+    for k, v in wandb.config.items():
+        # automate overwriting of config.x.y.z = wandb.config.'x.y.z'
         attr_keys = k.split(".")
         updated_config = v
         while attr_keys != []:
@@ -40,17 +46,20 @@ def main_sweep_classifier():
     wandb.log({"test_acc": score})
     return score
 
+
 def get_args():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
-    parser.add_argument("--data_csv", type=str, help="data dir or csv with paths to data")
+    parser.add_argument(
+        "--data_csv", type=str, help="data dir or csv with paths to data"
+    )
     parser.add_argument("--n_sweeps", type=int, help="number of sweeps to perform")
     parser.add_argument("--tags", type=str, default="", help="wandb tags")
-    parser.add_argument("--use_synthetic_af",  action='store_true')
-    parser.add_argument("--af_classifier.finetune_full_model",  action='store_true')
+    parser.add_argument("--use_synthetic_af", action="store_true")
+    parser.add_argument("--af_classifier.finetune_full_model", action="store_true")
 
-    #parser.add_argument("--af_inpainter_name", type=str)
+    # parser.add_argument("--af_inpainter_name", type=str)
     return parser.parse_args()
 
 

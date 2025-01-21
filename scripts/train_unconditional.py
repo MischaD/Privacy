@@ -1,4 +1,5 @@
 """Based on train_unconditional script in the original diffusers repo: https://github.com/huggingface/diffusers/blob/main/examples/unconditional_image_generation/train_unconditional.py"""
+
 import argparse
 import inspect
 import logging
@@ -29,21 +30,27 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from torchvision.models import resnet50
 from tqdm.auto import tqdm
-#from src.classifier.module import LightningSAFClassifier
+
+# from src.classifier.module import LightningSAFClassifier
 from einops import rearrange
 from src.pipeline import LDMPipeline
 from src.data.dataloader import get_dataset_from_csv
 from src.data.inpainter import get_inpainter
 from torchvision.transforms import ToPILImage
 
-#from src.data.inpainter import get_inpainter
-#from src.pipeline import DDPMPrivacyPipeline
+# from src.data.inpainter import get_inpainter
+# from src.pipeline import DDPMPrivacyPipeline
 
 import diffusers
 from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
-from diffusers.utils import check_min_version, is_accelerate_version, is_tensorboard_available, is_wandb_available
+from diffusers.utils import (
+    check_min_version,
+    is_accelerate_version,
+    is_tensorboard_available,
+    is_wandb_available,
+)
 from diffusers.utils.import_utils import is_xformers_available
 from utils import prepare_tdash_dataset
 
@@ -73,9 +80,13 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
 def main(config):
     tb_logging_dir = os.path.join(config.log_dir, "logs")
     config.output_dir = os.path.dirname(config.log_dir)
-    accelerator_project_config = ProjectConfiguration(project_dir=config.output_dir, logging_dir=tb_logging_dir)
+    accelerator_project_config = ProjectConfiguration(
+        project_dir=config.output_dir, logging_dir=tb_logging_dir
+    )
 
-    kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=7200))  # a big number for high resolution or big dataset
+    kwargs = InitProcessGroupKwargs(
+        timeout=timedelta(seconds=7200)
+    )  # a big number for high resolution or big dataset
     accelerator = Accelerator(
         gradient_accumulation_steps=config.dm_training.gradient_accumulation_steps,
         mixed_precision=config.dm_training.mixed_precision,
@@ -100,7 +111,9 @@ def main(config):
 
         def load_model_hook(models, input_dir):
             if config.dm_training.use_ema:
-                load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), UNet2DModel)
+                load_model = EMAModel.from_pretrained(
+                    os.path.join(input_dir, "unet_ema"), UNet2DModel
+                )
                 ema_model.load_state_dict(load_model.state_dict())
                 ema_model.to(accelerator.device)
                 del load_model
@@ -135,20 +148,20 @@ def main(config):
 
     # Initialize the model
     model = get_model(config)
-    num_trainable_params = sum(
-        p.numel() for p in model.parameters() if p.requires_grad
-    )
+    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Num trainable params: {num_trainable_params}")
     results = {}
-    results["num_trainable_params"]= num_trainable_params
-    results_json_path = os.path.join(os.path.dirname(config.log_dir), "results_test_diffusers.json")
-    if os.path.isfile(results_json_path): 
+    results["num_trainable_params"] = num_trainable_params
+    results_json_path = os.path.join(
+        os.path.dirname(config.log_dir), "results_test_diffusers.json"
+    )
+    if os.path.isfile(results_json_path):
         old_results = json_to_dict(results_json_path)
-    else: 
+    else:
         old_results = {}
     results = {**old_results, **results}
 
-    accelerator.wait_for_everyone() 
+    accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         dict_to_json(results, results_json_path)
 
@@ -173,7 +186,9 @@ def main(config):
         config.dm_training.mixed_precision = accelerator.mixed_precision
 
     # Initialize the scheduler
-    accepts_prediction_type = "prediction_type" in set(inspect.signature(DDPMScheduler.__init__).parameters.keys())
+    accepts_prediction_type = "prediction_type" in set(
+        inspect.signature(DDPMScheduler.__init__).parameters.keys()
+    )
     if accepts_prediction_type:
         noise_scheduler = DDPMScheduler(
             num_train_timesteps=config.dm_training.ddpm_num_steps,
@@ -182,7 +197,11 @@ def main(config):
             beta_end=config.dm_training.ddpm_beta_end,
         )
     else:
-        noise_scheduler = DDPMScheduler(num_train_timesteps=config.dm_training.ddpm_num_steps, beta_schedule=config.dm_training.ddpm_beta_schedule, beta_end=config.dm_training.ddpm_beta_end)
+        noise_scheduler = DDPMScheduler(
+            num_train_timesteps=config.dm_training.ddpm_num_steps,
+            beta_schedule=config.dm_training.ddpm_beta_schedule,
+            beta_end=config.dm_training.ddpm_beta_end,
+        )
 
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
@@ -195,48 +214,84 @@ def main(config):
 
     vae = VAE()
 
-    inputs_train_pub, labels_train_pub = get_dataset_from_csv(config, split="train", limit=config.data.limit_dataset_size, return_labels=True, add_public_imgs=True, add_private_imgs=False, vae=vae, csv_path=config.data_csv)
-    inputs_train_priv, labels_train_priv = get_dataset_from_csv(config, split="train", limit=config.data.limit_private_dataset_size, return_labels=True, add_public_imgs=False, add_private_imgs=True, vae=None, csv_path=config.private_data_csv)
+    inputs_train_pub, labels_train_pub = get_dataset_from_csv(
+        config,
+        split="train",
+        limit=config.data.limit_dataset_size,
+        return_labels=True,
+        add_public_imgs=True,
+        add_private_imgs=False,
+        vae=vae,
+        csv_path=config.data_csv,
+    )
+    inputs_train_priv, labels_train_priv = get_dataset_from_csv(
+        config,
+        split="train",
+        limit=config.data.limit_private_dataset_size,
+        return_labels=True,
+        add_public_imgs=False,
+        add_private_imgs=True,
+        vae=None,
+        csv_path=config.private_data_csv,
+    )
 
     if config.use_synthetic_af:
         # inpaint fingerprint in image
         inpainter = get_inpainter(config)
         for i in range(len(inputs_train_priv)):
             # apply SAF and compute latent
-            ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}_raw.png"))
-            inputs_train_priv[i], _  = inpainter(None, inputs_train_priv[i])
-            ToPILImage()(inputs_train_priv[i]).save(os.path.join(config.log_dir, f"private_img_{i}.png"))
+            ToPILImage()(inputs_train_priv[i]).save(
+                os.path.join(config.log_dir, f"private_img_{i}_raw.png")
+            )
+            inputs_train_priv[i], _ = inpainter(None, inputs_train_priv[i])
+            ToPILImage()(inputs_train_priv[i]).save(
+                os.path.join(config.log_dir, f"private_img_{i}.png")
+            )
 
-    if len(inputs_train_priv) == 0: 
+    if len(inputs_train_priv) == 0:
         logger.info("Training diffusion model without private images.")
         inputs_train = inputs_train_pub.cpu()
         labels_train = labels_train_pub.cpu()
-    else: 
+    else:
         if accelerator.is_main_process:
-            safe_viz_array(inputs_train_priv[0], os.path.join(config.log_dir, "private_image.png"))
+            safe_viz_array(
+                inputs_train_priv[0], os.path.join(config.log_dir, "private_image.png")
+            )
         inputs_train_priv = vae.encode(inputs_train_priv)
         inputs_train = torch.cat([inputs_train_pub.cpu(), inputs_train_priv.cpu()])
         labels_train = torch.cat([labels_train_pub.cpu(), labels_train_priv.cpu()])
 
     dataset = inputs_train
-    logger.info(f"Dataset size: {len(dataset)}. Number of private images: {len(inputs_train_priv)}")
+    logger.info(
+        f"Dataset size: {len(dataset)}. Number of private images: {len(inputs_train_priv)}"
+    )
 
     abs_batch_size = config.dm_training.train_batch_size * torch.cuda.device_count()
     num_epochs = math.ceil(abs_batch_size * config.dm_training.num_steps / len(dataset))
-    save_model_epochs = math.ceil(abs_batch_size * config.dm_training.save_model_steps / len(dataset))
-    save_images_epochs = math.ceil(abs_batch_size * config.dm_training.save_images_steps / len(dataset))
-    
-    logger.info(f"Train for {num_epochs} epochs, save model every {save_model_epochs} and images every {save_images_epochs} epochs.")
+    save_model_epochs = math.ceil(
+        abs_batch_size * config.dm_training.save_model_steps / len(dataset)
+    )
+    save_images_epochs = math.ceil(
+        abs_batch_size * config.dm_training.save_images_steps / len(dataset)
+    )
+
+    logger.info(
+        f"Train for {num_epochs} epochs, save model every {save_model_epochs} and images every {save_images_epochs} epochs."
+    )
 
     train_dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=config.dm_training.train_batch_size, shuffle=True, num_workers=0,
+        dataset,
+        batch_size=config.dm_training.train_batch_size,
+        shuffle=True,
+        num_workers=0,
     )
 
     # Initialize the learning rate scheduler
     lr_scheduler = get_scheduler(
         config.dm_training.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=config.dm_training.lr_warmup_steps * config.dm_training.gradient_accumulation_steps,
+        num_warmup_steps=config.dm_training.lr_warmup_steps
+        * config.dm_training.gradient_accumulation_steps,
         num_training_steps=(len(train_dataloader) * num_epochs),
     )
 
@@ -254,17 +309,29 @@ def main(config):
         run = os.path.split(__file__)[-1].split(".")[0]
         accelerator.init_trackers(run)
 
-    total_batch_size = config.dm_training.train_batch_size * accelerator.num_processes * config.dm_training.gradient_accumulation_steps
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / config.dm_training.gradient_accumulation_steps)
+    total_batch_size = (
+        config.dm_training.train_batch_size
+        * accelerator.num_processes
+        * config.dm_training.gradient_accumulation_steps
+    )
+    num_update_steps_per_epoch = math.ceil(
+        len(train_dataloader) / config.dm_training.gradient_accumulation_steps
+    )
     max_train_steps = num_epochs * num_update_steps_per_epoch
 
     logger.info("***** Running training *****")
     logger.info(f"  Num down blocks = {config.dm_training.num_down_blocks}")
     logger.info(f"  Num examples = {len(dataset)}")
     logger.info(f"  Num Epochs = {num_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {config.dm_training.train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {config.dm_training.gradient_accumulation_steps}")
+    logger.info(
+        f"  Instantaneous batch size per device = {config.dm_training.train_batch_size}"
+    )
+    logger.info(
+        f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
+    )
+    logger.info(
+        f"  Gradient Accumulation steps = {config.dm_training.gradient_accumulation_steps}"
+    )
     logger.info(f"  Total optimization steps = {max_train_steps}")
     logger.info(f"  Beta end value = {config.dm_training.ddpm_beta_end}")
     logger.info(f"Logging to: {config.output_dir}")
@@ -275,17 +342,25 @@ def main(config):
     # Train!
     for epoch in range(first_epoch, num_epochs):
         model.train()
-        progress_bar = tqdm(total=num_update_steps_per_epoch, disable=not accelerator.is_local_main_process)
+        progress_bar = tqdm(
+            total=num_update_steps_per_epoch,
+            disable=not accelerator.is_local_main_process,
+        )
         progress_bar.set_description(f"Epoch {epoch}")
         for step, batch in enumerate(train_dataloader):
             clean_images = batch.to(weight_dtype)
 
             # Sample noise that we'll add to the images
-            noise = torch.randn(clean_images.shape, dtype=weight_dtype, device=clean_images.device)
+            noise = torch.randn(
+                clean_images.shape, dtype=weight_dtype, device=clean_images.device
+            )
             bsz = clean_images.shape[0]
             # Sample a random timestep for each image
             timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,), device=clean_images.device
+                0,
+                noise_scheduler.config.num_train_timesteps,
+                (bsz,),
+                device=clean_images.device,
             ).long()
 
             # Add noise to the clean images according to the noise magnitude at each timestep
@@ -297,17 +372,25 @@ def main(config):
                 model_output = model(noisy_images, timesteps).sample
 
                 if config.dm_training.prediction_type == "epsilon":
-                    loss = F.mse_loss(model_output.float(), noise.float())  # this could have different weights!
+                    loss = F.mse_loss(
+                        model_output.float(), noise.float()
+                    )  # this could have different weights!
                 elif config.dm_training.prediction_type == "sample":
                     alpha_t = _extract_into_tensor(
-                        noise_scheduler.alphas_cumprod, timesteps, (clean_images.shape[0], 1, 1, 1)
+                        noise_scheduler.alphas_cumprod,
+                        timesteps,
+                        (clean_images.shape[0], 1, 1, 1),
                     )
                     snr_weights = alpha_t / (1 - alpha_t)
                     # use SNR weighting from distillation paper
-                    loss = snr_weights * F.mse_loss(model_output.float(), clean_images.float(), reduction="none")
+                    loss = snr_weights * F.mse_loss(
+                        model_output.float(), clean_images.float(), reduction="none"
+                    )
                     loss = loss.mean()
                 else:
-                    raise ValueError(f"Unsupported prediction type: {config.dm_training.prediction_type}")
+                    raise ValueError(
+                        f"Unsupported prediction type: {config.dm_training.prediction_type}"
+                    )
 
                 accelerator.backward(loss)
 
@@ -324,7 +407,11 @@ def main(config):
                 progress_bar.update(1)
                 global_step += 1
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
+            logs = {
+                "loss": loss.detach().item(),
+                "lr": lr_scheduler.get_last_lr()[0],
+                "step": global_step,
+            }
             if config.dm_training.use_ema:
                 logs["ema_decay"] = ema_model.cur_decay_value
             progress_bar.set_postfix(**logs)
@@ -354,11 +441,16 @@ def main(config):
                     ema_model.restore(unet.parameters())
 
                 # denormalize the images and save to tensorboard
-                images_processed = (images * 255).round().cpu().numpy().astype("uint8") # B H W C - np array 
+                images_processed = (
+                    (images * 255).round().cpu().numpy().astype("uint8")
+                )  # B H W C - np array
                 images_processed = rearrange(images_processed, "b c h w -> b h w c")
 
                 accelerator.get_tracker("wandb").log(
-                    {"test_samples": [wandb.Image(img) for img in images_processed], "epoch": epoch},
+                    {
+                        "test_samples": [wandb.Image(img) for img in images_processed],
+                        "epoch": epoch,
+                    },
                     step=global_step,
                 )
 
@@ -376,9 +468,13 @@ def main(config):
                 )
 
                 if epoch != num_epochs - 1:
-                    pipeline.save_pretrained(os.path.join(config.output_dir, f"epoch-{epoch:05}"))
-                else: 
-                    logger.info(f"Saving final model to: {config.output_dir} and {config.log_dir}")
+                    pipeline.save_pretrained(
+                        os.path.join(config.output_dir, f"epoch-{epoch:05}")
+                    )
+                else:
+                    logger.info(
+                        f"Saving final model to: {config.output_dir} and {config.log_dir}"
+                    )
                     pipeline.save_pretrained(os.path.join(config.output_dir, f"final"))
                     pipeline.save_pretrained(os.path.join(config.log_dir, f"final"))
 
@@ -393,16 +489,21 @@ def get_args():
     parser.add_argument("EXP_PATH", type=str, help="Path to experiment file")
     parser.add_argument("EXP_NAME", type=str, help="Path to Experiment results")
     parser.add_argument("--data_csv", help="Path to train data csv")
-    parser.add_argument("--use_synthetic_af",  action='store_true')
-    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--data.limit_dataset_size",  type=int)
+    parser.add_argument("--use_synthetic_af", action="store_true")
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=-1,
+        help="For distributed training: local_rank",
+    )
+    parser.add_argument("--data.limit_dataset_size", type=int)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = get_args()
-    config = main_setup(args, name=os.path.basename(__file__).rstrip('.py'))
-    #env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    #if env_local_rank != -1 and env_local_rank != config.local_rank:
+    config = main_setup(args, name=os.path.basename(__file__).rstrip(".py"))
+    # env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    # if env_local_rank != -1 and env_local_rank != config.local_rank:
     #    config.local_rank = env_local_rank
     main(config)
